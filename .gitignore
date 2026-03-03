@@ -4,3 +4,5 @@ zig-out
 zig-out/
 node_modules/
 *.tsbuildinfo
+.quickemu/
+.artifacts/

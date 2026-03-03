@@ -12,6 +12,8 @@
   - `zig build test --summary all -freference-trace` (Windows `x86_64-windows-gnu`) — pass (`190/190`)
   - `zig test src/io/iocp.zig -target x86_64-windows-gnu -O Debug` — pass (`9/9`)
   - `zig build run -- run examples\\gltf_viewer\\dist\\gltf-bundle.js` (Windows `x86_64-windows-gnu`) — pass (no `PlatformUnavailable` / UTF-8 parse error)
+  - `bash scripts/quickemu-macos-setup.sh --release sonoma --quickemu-root /tmp/quickemu-ref2 --check-only` (WSL2 Ubuntu host) — pass
+  - `bash scripts/quickemu-macos-setup.sh --release sonoma --quickemu-root /tmp/quickemu-ref2` (WSL2 Ubuntu host) — pass (VM assets/config created)
   - `zig build embed-check` (repo root) — pass (`embed-check script bytes: 3071`)
   - `zig build test` (`deps/zig-quickjs-ng`) — pass
   - `npm run build` (`src/ts`) — pass
@@ -39,7 +41,7 @@
 | T4 | Complete | `src/window.zig`, runtime smoke logs | GLFW + zgpu window/context creation working on Linux. |
 | T5 | Complete | `src/handle_table.zig` tests | Generation, free list, stale/double-free cases covered. |
 | T6a | Complete | `src/io/io_uring.zig` tests | Linux backend with file/socket tests implemented. |
-| T6b | Partial / Needs Verification | `src/io/kqueue.zig` | Implementation exists; not verified on macOS target in this audit. |
+| T6b | Partial / Needs Verification | `src/io/kqueue.zig`, `scripts/quickemu-macos-setup.sh`, `scripts/macos-guest-verify.sh`, `docs/specs/threez/macos-build-investigation.md` | Quickemu-based macOS verification harness is in place and VM artifacts are prepared; still awaiting guest-side `zig build/test` + kqueue test evidence to close. |
 | T6c | Complete | `src/io/iocp.zig`, `build.zig`, `build.zig.zon`, `docs/specs/threez/windows-build-investigation.md` | Windows build + full tests pass; IOCP-specific tests pass on `x86_64-windows-gnu`. |
 | T7 | Complete | `src/ts/bootstrap/*`, `src/bootstrap.zig` | Bootstrap build and typecheck pass. |
 | T8 | Complete | `src/polyfills/{console,performance,encoding}.zig` tests | Native polyfills are registered and tested. |
@@ -64,6 +66,6 @@
 
 ## Immediate Follow-ups
 
-1. Verify T6b on real macOS target (or CI macOS job) to close the remaining platform confidence gap.
+1. Complete guest-side runbook in `docs/specs/threez/macos-build-investigation.md` (including `scripts/macos-guest-verify.sh`) and attach logs to close T6b.
 2. Decide whether T23 acceptance should be reduced to current demo scope or implement missing items (animation mixer, auto-frame, remote index flow, longer soak/perf checks).
 3. Add platform CI coverage for `zig build` + smoke runs so T22/T23 confidence is not tied to one Linux workstation.
