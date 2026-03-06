@@ -105,7 +105,7 @@ pub fn run(opaque_app: *anyopaque) void {
             }
         }
 
-        // Tick the JS event loop each frame
+        // Tick the JS event loop each frame (skip when paused or window lost)
         if (app.state == .running) {
             if (app.runtime) |rt| {
                 rt.tick();
@@ -129,7 +129,7 @@ pub fn run(opaque_app: *anyopaque) void {
 pub fn pollEvents(app: *AndroidApp) void {
     // Block when paused/created to save battery, non-blocking otherwise
     const timeout: c_int = switch (app.state) {
-        .paused, .created => -1,
+        .paused, .created, .window_lost => -1,
         else => 0,
     };
 
@@ -183,7 +183,7 @@ fn onAppCmd(native_app: ?*c.struct_android_app, cmd: i32) callconv(.c) void {
             logInfo("TERM_WINDOW");
         },
         c.APP_CMD_RESUME => {
-            app.state = if (app.window != null) .running else .created;
+            app.state = if (app.gpu_window != null) .running else .created;
             logInfo("RESUME");
         },
         c.APP_CMD_PAUSE => {
