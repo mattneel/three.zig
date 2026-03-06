@@ -1,5 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const zgpu = @import("zgpu");
+const wgpu = zgpu.wgpu;
 const AndroidWindow = @import("android_window.zig").AndroidWindow;
 const EventBridge = @import("event_bridge.zig").EventBridge;
 const fetch = @import("polyfills/fetch.zig");
@@ -77,7 +79,12 @@ pub fn run(opaque_app: *anyopaque) void {
             }
         }
 
-        // TODO(T11+): Render frame when in running state
+        // Render a frame when running (clear color proves the pipeline)
+        if (app.state == .running) {
+            if (app.gpu_window) |*gw| {
+                renderClearColor(gw.gctx);
+            }
+        }
     }
 
     if (app.gpu_window) |*gw| gw.deinit();
@@ -157,6 +164,36 @@ fn onAppCmd(native_app: ?*c.struct_android_app, cmd: i32) callconv(.c) void {
         c.APP_CMD_LOW_MEMORY => logInfo("LOW_MEMORY"),
         else => {},
     }
+}
+
+// -- Clear-color render (T11 integration test) --
+
+fn renderClearColor(gctx: *zgpu.GraphicsContext) void {
+    const view = gctx.swapchain.getCurrentTextureView();
+    defer view.release();
+
+    const encoder = gctx.device.createCommandEncoder(.{ .label = "clear" });
+    defer encoder.release();
+
+    const color_attachment = wgpu.RenderPassColorAttachment{
+        .view = view,
+        .load_op = .clear,
+        .store_op = .store,
+        .clear_value = .{ .r = 0.15, .g = 0.15, .b = 0.25, .a = 1.0 },
+    };
+
+    const pass = encoder.beginRenderPass(.{
+        .color_attachment_count = 1,
+        .color_attachments = @ptrCast(&color_attachment),
+        .depth_stencil_attachment = null,
+    });
+    pass.end();
+    pass.release();
+
+    const cmdbuf = encoder.finish(.{ .label = null });
+    defer cmdbuf.release();
+    gctx.queue.submit(&.{cmdbuf});
+    _ = gctx.present();
 }
 
 // -- Android touch input → PointerEvent --
