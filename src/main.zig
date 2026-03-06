@@ -1,11 +1,27 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const clap = @import("clap");
 const runtime_mod = @import("runtime.zig");
 const HandleTable = @import("handle_table.zig").HandleTable;
 
+const is_android = builtin.os.tag == .linux and builtin.abi == .android;
+
 const log = std.log.scoped(.threez);
 
 const version_string = "0.1.0";
+
+// Android entry point — exported for native_app_glue.
+// The function body (and its @import) is only analyzed when is_android is true,
+// because @export is conditional and nothing else references androidMain.
+comptime {
+    if (is_android) {
+        @export(&androidMain, .{ .name = "android_main" });
+    }
+}
+
+fn androidMain(app_ptr: *anyopaque) callconv(.c) void {
+    @import("android_app.zig").run(app_ptr);
+}
 
 // =============================================================================
 // Subcommand definitions

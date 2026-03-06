@@ -49,6 +49,27 @@ pub fn translateC(
     });
 
     translate.addIncludePath(upstream.path(""));
+
+    // Zig's TranslateC doesn't pass --libc to the subprocess, so for
+    // Android cross-compilation we must manually add NDK sysroot headers.
+    if (target.result.abi == .android) {
+        const ndk_root = std.process.getEnvVarOwned(b.allocator, "ANDROID_NDK_HOME") catch
+            @as([]const u8, "/home/autark/android/android-ndk-r27c");
+        const prebuilt = "/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include";
+        const arch_include = if (target.result.cpu.arch.isAARCH64())
+            "/aarch64-linux-android"
+        else
+            "/x86_64-linux-android";
+        // Generic C headers (stdio.h, stdlib.h, etc.)
+        translate.addSystemIncludePath(.{
+            .cwd_relative = b.fmt("{s}{s}", .{ ndk_root, prebuilt }),
+        });
+        // Arch-specific headers
+        translate.addSystemIncludePath(.{
+            .cwd_relative = b.fmt("{s}{s}{s}", .{ ndk_root, prebuilt, arch_include }),
+        });
+    }
+
     return translate;
 }
 

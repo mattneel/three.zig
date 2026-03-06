@@ -1,0 +1,10 @@
+.{
+    .name = .dawn_aarch64_linux_android,
+    .version = "0.0.1",
+    .fingerprint = 0xefbb919f07e1ac3d,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "libdawn.a",
+    },
+}

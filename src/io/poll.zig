@@ -25,7 +25,10 @@ pub const Completion = struct {
 /// Platform-specific async I/O poller.
 /// Compile-time dispatched — zero overhead abstraction.
 pub const IOPoll = switch (builtin.os.tag) {
-    .linux => @import("io_uring.zig").IoUringPoll,
+    .linux => if (builtin.abi == .android)
+        @import("epoll.zig").EpollPoll
+    else
+        @import("io_uring.zig").IoUringPoll,
     .macos, .freebsd, .netbsd => @import("kqueue.zig").KqueuePoll,
     .windows => @import("iocp.zig").IocpPoll,
     else => @compileError("unsupported platform for async I/O"),
