@@ -308,12 +308,13 @@ function fetchPolyfill(
     if (bytes === null && !url.startsWith("/")) {
       const scriptDir = (globalThis as any).__scriptDir;
       if (scriptDir) {
+        const normalizedScriptDir = String(scriptDir).replace(/\\/g, "/");
         // Resolve relative to the script's directory (e.g., examples/gltf_viewer/dist/)
-        bytes = __native_readFileSync(scriptDir + "/" + url);
+        bytes = __native_readFileSync(normalizedScriptDir + "/" + url);
         // Also try one level up from dist/ (common pattern: script in dist/, assets alongside)
         if (bytes === null) {
-          const parentDir = scriptDir.replace(/\/[^/]+\/?$/, "");
-          if (parentDir !== scriptDir) {
+          const parentDir = normalizedScriptDir.replace(/\/[^/]+\/?$/, "");
+          if (parentDir !== normalizedScriptDir) {
             bytes = __native_readFileSync(parentDir + "/" + url);
           }
         }

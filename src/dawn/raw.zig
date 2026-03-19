@@ -17,24 +17,10 @@ pub fn stringViewToSlice(view: c.WGPUStringView) []const u8 {
     return view.data[0..view.length];
 }
 
-pub fn waitFuture(instance: c.WGPUInstance, future: c.WGPUFuture) WaitError!void {
-    var wait_info = c.WGPUFutureWaitInfo{
-        .future = future,
-        .completed = c.WGPU_FALSE,
-    };
-
-    while (true) {
-        const status = c.wgpuInstanceWaitAny(instance, 1, &wait_info, 50_000_000);
-        switch (status) {
-            c.WGPUWaitStatus_Success => {
-                if (wait_info.completed != c.WGPU_FALSE) return;
-                c.wgpuInstanceProcessEvents(instance);
-            },
-            c.WGPUWaitStatus_TimedOut => {
-                c.wgpuInstanceProcessEvents(instance);
-            },
-            else => return error.WaitFailed,
-        }
+fn waitForCallback(instance: c.WGPUInstance, completed: *const std.atomic.Value(bool)) void {
+    while (!completed.load(.acquire)) {
+        c.wgpuInstanceProcessEvents(instance);
+        std.Thread.sleep(1 * std.time.ns_per_ms);
     }
 }
 
@@ -43,6 +29,7 @@ pub fn requestAdapterSync(
     options: ?*const c.WGPURequestAdapterOptions,
 ) WaitError!c.WGPUAdapter {
     const State = struct {
+        completed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         status: c.WGPURequestAdapterStatus = 0,
         adapter: c.WGPUAdapter = null,
     };
@@ -62,6 +49,7 @@ pub fn requestAdapterSync(
             const state = @as(*State, @ptrCast(@alignCast(userdata1.?)));
             state.status = status;
             state.adapter = adapter;
+            state.completed.store(true, .release);
         }
     }.call;
 
@@ -73,8 +61,8 @@ pub fn requestAdapterSync(
         .userdata1 = &state,
         .userdata2 = null,
     };
-    const future = c.wgpuInstanceRequestAdapter(instance, options, callback_info);
-    try waitFuture(instance, future);
+    _ = c.wgpuInstanceRequestAdapter(instance, options, callback_info);
+    waitForCallback(instance, &state.completed);
 
     if (state.status != c.WGPURequestAdapterStatus_Success or state.adapter == null) {
         log.err("requestAdapter final status={d}", .{state.status});
@@ -89,6 +77,7 @@ pub fn requestDeviceSync(
     descriptor: ?*const c.WGPUDeviceDescriptor,
 ) WaitError!c.WGPUDevice {
     const State = struct {
+        completed: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         status: c.WGPURequestDeviceStatus = 0,
         device: c.WGPUDevice = null,
     };
@@ -108,6 +97,7 @@ pub fn requestDeviceSync(
             const state = @as(*State, @ptrCast(@alignCast(userdata1.?)));
             state.status = status;
             state.device = device;
+            state.completed.store(true, .release);
         }
     }.call;
 
@@ -119,8 +109,8 @@ pub fn requestDeviceSync(
         .userdata1 = &state,
         .userdata2 = null,
     };
-    const future = c.wgpuAdapterRequestDevice(adapter, descriptor, callback_info);
-    try waitFuture(instance, future);
+    _ = c.wgpuAdapterRequestDevice(adapter, descriptor, callback_info);
+    waitForCallback(instance, &state.completed);
 
     if (state.status != c.WGPURequestDeviceStatus_Success or state.device == null) {
         log.err("requestDevice final status={d}", .{state.status});

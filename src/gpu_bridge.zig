@@ -994,7 +994,6 @@ fn gpuBufferUnmapNative(
 
     if (ht.get(id)) |entry| {
         if (entry.handle.as(wgpu.Buffer)) |buffer| {
-            log.debug("bufferUnmap: id={}", .{id.toNumber()});
             buffer.unmap();
         }
     } else |_| {}
@@ -1041,7 +1040,6 @@ fn gpuBufferGetMappedRangeNative(
 
     // Get the actual mapped pointer from Dawn — zero-copy.
     // JS writes directly to GPU mapped memory; unmap finalizes.
-    log.debug("getMappedRange: offset={} size={}", .{ offset, range_size });
     if (buffer.getMappedRange(u8, offset, range_size)) |mapped_slice| {
         // Wrap the mapped GPU memory as a JS ArrayBuffer (no free func —
         // Dawn owns the memory, it is released on buffer.unmap()).

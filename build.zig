@@ -847,6 +847,7 @@ fn addNativeDawnBuild(
             "-DDAWN_ENABLE_D3D12=ON",
             "-DTINT_BUILD_HLSL_WRITER=ON",
             "-DDAWN_ENABLE_METAL=OFF",
+            "-DDAWN_FORCE_SYSTEM_COMPONENT_LOAD=ON",
             "-DDAWN_USE_WINDOWS_UI=OFF",
             "-DDAWN_USE_X11=OFF",
             "-DDAWN_USE_WAYLAND=OFF",

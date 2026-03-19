@@ -1346,10 +1346,11 @@
       if (bytes === null && !url.startsWith("/")) {
         const scriptDir = globalThis.__scriptDir;
         if (scriptDir) {
-          bytes = __native_readFileSync(scriptDir + "/" + url);
+          const normalizedScriptDir = String(scriptDir).replace(/\\/g, "/");
+          bytes = __native_readFileSync(normalizedScriptDir + "/" + url);
           if (bytes === null) {
-            const parentDir = scriptDir.replace(/\/[^/]+\/?$/, "");
-            if (parentDir !== scriptDir) {
+            const parentDir = normalizedScriptDir.replace(/\/[^/]+\/?$/, "");
+            if (parentDir !== normalizedScriptDir) {
               bytes = __native_readFileSync(parentDir + "/" + url);
             }
           }
