@@ -207,6 +207,17 @@ cp examples/gltf_viewer/assets/DamagedHelmet.glb /tmp/threezig-apk-assets/assets
 zig build apk -Dtarget=aarch64-linux-android -Dassets=/tmp/threezig-apk-assets
 ```
 
+## Smoke Testing
+
+For platform-specific smoke testing instructions and automated scripts, see [docs/SMOKE.md](docs/SMOKE.md).
+
+Quick smoke commands:
+- Desktop (Linux/WSL): `./scripts/smoke.sh`
+- Desktop (Windows): `scripts\smoke.bat`
+- Android: `./scripts/smoke-android.sh full`
+
+All smoke tests use the same glTF viewer bundle (DamagedHelmet) to verify the runtime works correctly.
+
 ## Contributor Notes
 
 The active native renderer path is source-built Dawn through `build.zig`.
