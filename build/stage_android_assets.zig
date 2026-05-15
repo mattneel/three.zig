@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     const args = try std.process.argsAlloc(allocator);
@@ -18,7 +19,9 @@ pub fn main() !void {
 
     // Create output directory structure
     try std.fs.cwd().makePath(output_dir);
-    try std.fs.cwd().makePath(try std.fs.path.join(allocator, &.{ output_dir, "assets" }));
+    const assets_subdir = try std.fs.path.join(allocator, &.{ output_dir, "assets" });
+    defer allocator.free(assets_subdir);
+    try std.fs.cwd().makePath(assets_subdir);
 
     // Copy bundle.js to app.js using readAll/writeAll
     {
@@ -50,7 +53,4 @@ pub fn main() !void {
     }
 
     std.debug.print("Staged Android assets to {s}\n", .{output_dir});
-
-    // Check for memory leaks
-    _ = gpa.deinit();
 }
