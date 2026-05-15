@@ -1,6 +1,6 @@
 # macOS Development Environment via Docker
 
-This directory contains a Docker Compose configuration for running macOS 15 (Sequoia) in a container for development and testing of three.zig on macOS.
+This directory contains a Docker Compose configuration for running macOS 14 (Sonoma) in a container for development and testing of three.zig on macOS.
 
 ## Prerequisites
 
@@ -51,12 +51,14 @@ sudo -S mount_9p shared
 ## Configuration
 
 The container is configured with:
-- **macOS Version**: 15 (Sequoia)
+- **macOS Version**: 14 (Sonoma) - stable default
 - **RAM**: 8GB
 - **CPU Cores**: 4
 - **Disk Size**: 128GB
 - **Web Interface**: http://localhost:8006
 - **VNC**: localhost:5900
+
+**Note**: macOS 15 (Sequoia) is available but has limitations (Apple Account sign-in not supported). To use Sequoia instead, change `VERSION: "14"` to `VERSION: "15"` in `docker-compose.macos.yml`.
 
 Adjust these in `docker-compose.macos.yml` if needed.
 
@@ -70,9 +72,8 @@ docker compose -f docker-compose.macos.yml down
 ## Important Notes
 
 - **EULA Compliance**: Only run this container on Apple hardware per Apple's EULA
-- **Performance**: macOS 15 support is still in development
 - **Storage**: Disk image persists in `./macos-storage/` directory
-- **Apple ID**: Sign-in may not work with macOS 15 (known limitation)
+- **Version**: macOS 14 (Sonoma) is used as stable default; Sequoia (15) available but has limitations
 
 ## Development Workflow
 

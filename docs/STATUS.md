@@ -42,7 +42,7 @@ The project has migrated from prebuilt Dawn dependencies to source-built Dawn/Ti
 | Linux (x86_64) | ✅ Working | ✅ Working | Vulkan backend, primary dev target |
 | Windows (x86_64) | ✅ Working | ✅ Working | D3D12 backend, requires VS Build Tools with LLVM |
 | Android (ARM64) | ✅ Working | ✅ Working | Vulkan backend, NativeActivity, APK builds |
-| macOS | ✅ Docker Dev | ⚠️ Best-effort | Metal backend, Docker environment for development |
+| macOS | ✅ Docker Dev | ⚠️ Best-effort | Metal backend, Docker environment (macOS 14 Sonoma) |
 
 ### Known Working Features
 

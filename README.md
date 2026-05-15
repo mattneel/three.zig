@@ -201,7 +201,7 @@ is installed to `zig-out/threez.apk`.
 assets to `android-assets/` and bundles them into the APK. No manual asset staging
 is required for the default example. For custom assets, use `-Dassets=/path/to/assets`.
 
-macOS is supported through a Docker-based development environment:
+macOS is supported through a Docker-based development environment (macOS 14 Sonoma by default):
 
 ```sh
 docker compose -f docker-compose.macos.yml up -d
