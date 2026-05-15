@@ -14,6 +14,7 @@ This document describes how to run smoke tests across all supported platforms us
 - **Linux**: Vulkan driver, X11 development libraries
 - **Windows**: Visual Studio Build Tools with LLVM/Clang, Windows SDK
 - **Android**: Android SDK, Android NDK, connected Android device
+- **macOS**: Docker with KVM support (see docs/MACOS-DOCKER.md)
 
 ## Quick Reference
 
@@ -123,6 +124,54 @@ GAINED_FOCUS
 - Activity: `android.app.NativeActivity`
 - Native library: `threez`
 
+## macOS Smoke (Docker)
+
+### Setup
+See [docs/MACOS-DOCKER.md](docs/MACOS-DOCKER.md) for initial Docker setup.
+
+### Performance Warning
+**macOS Docker smoke tests will be very slow due to software virtio GPU rendering.**
+- Ignore FPS metrics - focus on functionality only
+- Expect long load times (models may take minutes to render)
+- Use for CI/compatibility testing, not performance validation
+
+### Manual macOS Smoke
+```bash
+# Start the container
+docker compose -f docker-compose.macos.yml up -d
+
+# Access via web browser at http://localhost:8006
+# Complete initial macOS setup if first run
+
+# In macOS Terminal, mount shared project directory:
+sudo -S mount_9p shared
+
+# Navigate to project (in Finder: Go → Computer → shared)
+cd /shared
+
+# Install Zig in macOS (follow Zig installation instructions)
+# Then build and run:
+zig build
+./zig-out/bin/threez run examples/gltf_viewer/dist/gltf-bundle.js
+```
+
+### Expected macOS Behavior
+- Build should succeed (may be slower than desktop)
+- App should launch without crashing
+- DamagedHelmet should eventually render (may take several minutes)
+- **Ignore FPS values** - they will be very low due to software rendering
+- Check logs for: `DamagedHelmet loaded successfully`
+
+### Verification Focus for macOS
+- [ ] Build succeeds without errors
+- [ ] App launches without crash
+- [ ] DamagedHelmet eventually renders (patience required)
+- [ ] Log shows: `DamagedHelmet loaded successfully`
+- [ ] No Metal backend errors in logs
+- [ ] App can be closed normally
+
+**Do not benchmark or measure performance on macOS Docker** - the virtio GPU is software-rendered and not representative of real Metal GPU performance.
+
 ## Verification Checklist
 
 ### Desktop (Linux/Windows)
@@ -142,6 +191,18 @@ GAINED_FOCUS
 - [ ] Log shows: `DamagedHelmet loaded successfully`
 - [ ] App survives orientation changes
 - [ ] Screenshot shows rendered model
+
+### macOS (Docker)
+- [ ] Docker container starts successfully
+- [ ] macOS setup completed (if first run)
+- [ ] Shared directory mounted in macOS
+- [ ] Zig installed in macOS
+- [ ] Build succeeds without errors
+- [ ] App launches without crash
+- [ ] DamagedHelmet eventually renders (ignore load time)
+- [ ] Log shows: `DamagedHelmet loaded successfully`
+- [ ] No Metal backend errors
+- [ ] **FPS ignored** (software rendering expected)
 
 ## Troubleshooting
 
@@ -181,6 +242,32 @@ export ADB=/mnt/c/Users/YourUser/Downloads/platform-tools/adb.exe
 adb logcat -b crash -d -v time
 ```
 
+### macOS: Container won't start
+```bash
+# Verify KVM support
+sudo apt install cpu-checker
+sudo kvm-ok
+
+# Check if KVM device exists
+ls -la /dev/kvm
+
+# Try with privileged mode if permissions are an issue
+# Add `privileged: true` to docker-compose.macos.yml
+```
+
+### macOS: Extremely slow performance
+- This is expected due to software virtio GPU
+- Focus on functionality, not performance
+- For real Metal GPU testing, you need actual Apple hardware
+
+### macOS: Can't access shared directory
+```bash
+# In macOS Terminal, remount the shared directory:
+sudo -S mount_9p shared
+
+# Check if shared directory appears in Finder (Go → Computer)
+```
+
 ## Continuous Integration
 
 These smoke scripts are designed to be run in CI:
@@ -204,3 +291,5 @@ These smoke scripts are designed to be run in CI:
 - Android requires manual asset staging, which is automated by `smoke-android.sh`
 - All platforms should use the same source bundle: `examples/gltf_viewer/dist/gltf-bundle.js`
 - The DamagedHelmet.glb asset is expected at `examples/gltf_viewer/assets/DamagedHelmet.glb`
+- macOS Docker performance is very slow due to software rendering - use for compatibility testing only
+- For real Metal GPU performance testing, actual Apple hardware is required
