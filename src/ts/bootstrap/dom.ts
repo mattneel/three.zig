@@ -101,9 +101,9 @@ function createNavigator(): {
 } {
   return {
     gpu: new GPU(),
-    userAgent: "threez/0.1.0",
+    userAgent: "three.zig/0.1.0",
     language: "en-US",
-    platform: "threez",
+    platform: "three.zig",
   };
 }
 

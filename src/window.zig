@@ -8,7 +8,7 @@ const log = std.log.scoped(.window);
 pub const WindowConfig = struct {
     width: u32 = 1280,
     height: u32 = 720,
-    title: [:0]const u8 = "threez",
+    title: [:0]const u8 = "three.zig",
 };
 
 pub const Window = struct {

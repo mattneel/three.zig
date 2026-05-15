@@ -16,4 +16,4 @@ Each epic directory contains:
 
 ## Active Epics
 
-- `threez`
+- `threez` - original three.zig project spec/history

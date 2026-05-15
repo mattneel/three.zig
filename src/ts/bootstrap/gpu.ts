@@ -1,5 +1,5 @@
 /**
- * WebGPU polyfill classes for the threez runtime.
+ * WebGPU polyfill classes for the three.zig runtime.
  *
  * These classes wrap native handle IDs returned by the Zig GPU bridge.
  * Since zgpu pre-creates the adapter, device, and queue at startup,

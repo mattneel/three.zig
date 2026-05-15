@@ -1,5 +1,5 @@
 /**
- * Bootstrap entry point for the threez runtime.
+ * Bootstrap entry point for the three.zig runtime.
  *
  * This file is bundled into a single IIFE by esbuild and injected
  * into QuickJS-NG before any user code runs. It sets up the browser
@@ -241,7 +241,7 @@ class URLPolyfill {
 
 // Static methods for object URL management
 (URLPolyfill as any).createObjectURL = function (blob: any): string {
-  const id = `blob:threez/${++_blobIdCounter}`;
+  const id = `blob:three.zig/${++_blobIdCounter}`;
   _blobRegistry.set(id, { data: blob._data, type: blob.type || "application/octet-stream" });
   return id;
 };

@@ -1,7 +1,7 @@
 // Triangle example — first native WebGPU render (T20)
 //
-// Renders a colored triangle using the threez WebGPU polyfills.
-// This file is loaded and eval'd by the threez runtime.
+// Renders a colored triangle using the three.zig WebGPU polyfills.
+// This file is loaded and eval'd by the three.zig runtime.
 //
 // The script exercises the full pipeline:
 //   navigator.gpu.requestAdapter()

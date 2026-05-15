@@ -16,5 +16,5 @@
 - Registry: https://registry.npmjs.org/three/-/three-0.183.2.tgz
 - Date pinned: 2026-03-02
 - Location: examples/threejs_basic/node_modules/three/
-- Purpose: Integration testing and gap analysis for threez WebGPU polyfill layer
+- Purpose: Integration testing and gap analysis for the three.zig WebGPU polyfill layer
 - Notes: Installed via npm, not vendored into source tree. Pin version in package.json.

@@ -2,7 +2,7 @@
  * Three.js simple scene render (T22).
  *
  * Renders a colored box with a directional light using Three.js WebGPURenderer.
- * This is the first Three.js scene running through the threez native runtime.
+ * This is the first Three.js scene running through the three.zig native runtime.
  *
  * Usage:
  *   1. cd examples/threejs_basic && node esbuild.config.mjs

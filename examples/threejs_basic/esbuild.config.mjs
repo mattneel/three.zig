@@ -2,7 +2,7 @@
  * esbuild configuration for bundling Three.js examples.
  *
  * Builds all entry points into dist/ as IIFE bundles for the
- * threez QuickJS-NG runtime.
+ * three.zig QuickJS-NG runtime.
  *
  * Usage:
  *   node esbuild.config.mjs

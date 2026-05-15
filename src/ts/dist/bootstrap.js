@@ -1035,9 +1035,9 @@
   function createNavigator() {
     return {
       gpu: new GPU(),
-      userAgent: "threez/0.1.0",
+      userAgent: "three.zig/0.1.0",
       language: "en-US",
-      platform: "threez"
+      platform: "three.zig"
     };
   }
   var DocumentStub = class extends EventTarget {
@@ -1765,7 +1765,7 @@
     }
   };
   URLPolyfill.createObjectURL = function(blob) {
-    const id = `blob:threez/${++_blobIdCounter}`;
+    const id = `blob:three.zig/${++_blobIdCounter}`;
     _blobRegistry.set(id, { data: blob._data, type: blob.type || "application/octet-stream" });
     return id;
   };

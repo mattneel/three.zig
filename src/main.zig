@@ -125,7 +125,7 @@ pub fn main() !void {
         .help => printMainHelp(),
         .version => {
             const stderr = std.fs.File.stderr();
-            stderr.writeAll("threez " ++ version_string ++ "\n") catch {};
+        stderr.writeAll("three.zig " ++ version_string ++ "\n") catch {};
         },
         .run => runMain(allocator, &iter) catch |err| {
             log.err("run failed: {}", .{err});
@@ -137,7 +137,7 @@ pub fn main() !void {
 fn printMainHelp() void {
     const stderr = std.fs.File.stderr();
     stderr.writeAll(
-        \\threez — native Three.js runtime
+        \\three.zig — native Three.js runtime
         \\
         \\Usage: threez <command> [options]
         \\
@@ -196,7 +196,7 @@ fn runMain(allocator: std.mem.Allocator, iter: *std.process.ArgIterator) !void {
     const win_height: u32 = res.args.height orelse 720;
     const title_owned = if (res.args.title) |t| try allocator.dupeZ(u8, t) else null;
     defer if (title_owned) |t| allocator.free(t);
-    const win_title: [:0]const u8 = title_owned orelse "threez";
+    const win_title: [:0]const u8 = title_owned orelse "three.zig";
     const max_handles: u32 = res.args.@"max-handles" orelse HandleTable.default_capacity;
     const assets_dir = res.args.assets;
     const error_mode: runtime_mod.ErrorMode = if (res.args.strict != 0) .fail_fast else .resilient;
