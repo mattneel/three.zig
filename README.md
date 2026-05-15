@@ -27,7 +27,7 @@ Known limits:
 
 - This is a WebGPU runtime, not a browser. DOM support is intentionally minimal.
 - `WebGLRenderer` is out of scope for now.
-- macOS is best-effort through CI until there is regular local hardware testing.
+- macOS is supported through Docker for development (see docker-compose.macos.yml).
 - The WebGPU and browser-polyfill surface grows by running real Three.js apps and filling gaps.
 
 ## Quick Start
@@ -200,6 +200,14 @@ is installed to `zig-out/threez.apk`.
 **Automatic asset staging**: The build automatically stages the glTF viewer example
 assets to `android-assets/` and bundles them into the APK. No manual asset staging
 is required for the default example. For custom assets, use `-Dassets=/path/to/assets`.
+
+macOS is supported through a Docker-based development environment:
+
+```sh
+docker compose -f docker-compose.macos.yml up -d
+```
+
+Access the web interface at http://localhost:8006. See [docs/MACOS-DOCKER.md](docs/MACOS-DOCKER.md) for detailed setup instructions and file sharing configuration.
 
 ## Smoke Testing
 

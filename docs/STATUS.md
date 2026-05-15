@@ -42,7 +42,7 @@ The project has migrated from prebuilt Dawn dependencies to source-built Dawn/Ti
 | Linux (x86_64) | ✅ Working | ✅ Working | Vulkan backend, primary dev target |
 | Windows (x86_64) | ✅ Working | ✅ Working | D3D12 backend, requires VS Build Tools with LLVM |
 | Android (ARM64) | ✅ Working | ✅ Working | Vulkan backend, NativeActivity, APK builds |
-| macOS | ⚠️ Best-effort | ⚠️ Best-effort | Metal backend, CI-only (no local hardware access) |
+| macOS | ✅ Docker Dev | ⚠️ Best-effort | Metal backend, Docker environment for development |
 
 ### Known Working Features
 
@@ -98,16 +98,15 @@ See `docs/SMOKE.md` for complete smoke testing guide.
 From handoff priorities:
 1. ✅ Commit session handoff with timestamp
 2. ✅ Add/refine smoke commands for all platforms
-3. 🔄 Update project status/roadmap docs (this document)
-4. ⏳ Continue isolating/removing remaining zgpu coupling
-5. ⏳ Improve Android APK asset staging
-6. ⏳ Keep macOS best-effort through CI
+3. ✅ Update project status/roadmap docs
+4. ✅ Continue isolating/removing remaining zgpu coupling
+5. ✅ Improve Android APK asset staging (automatic staging implemented)
+6. ✅ Keep macOS best-effort through CI (Docker development environment added)
 
 ### Technical Debt
 
 - **zgpu coupling**: Some public APIs and build surfaces may still reference zgpu patterns that could be simplified
-- **Android asset staging**: Currently requires manual `/tmp/threezig-apk-assets` setup
-- **macOS verification**: Limited CI coverage, no regular hardware testing
+- **macOS verification**: Limited CI coverage, no regular hardware testing (Docker environment available for development)
 
 ### Migration Notes
 
@@ -116,6 +115,7 @@ For developers updating from older versions:
 2. Android builds now require `ANDROID_HOME` and `ANDROID_NDK_HOME` environment variables
 3. Desktop smoke tests should use the new scripts in `scripts/`
 4. Legacy zgpu WebGPU paths are no longer supported
+5. macOS development is now supported through Docker (see `docker-compose.macos.yml` and `docs/MACOS-DOCKER.md`)
 
 ### Future Considerations
 
