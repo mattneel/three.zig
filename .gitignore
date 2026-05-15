@@ -7,6 +7,7 @@ node_modules/
 .quickemu/
 .artifacts/
 build-tools/
+platforms/
 debug.keystore
 # Large Android Dawn static libs — fetch separately
 deps/dawn-aarch64-linux-android/libdawn.a
