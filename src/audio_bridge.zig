@@ -199,14 +199,13 @@ fn audioPlayBufferWrapper(
         return Value.initBool(false);
     }
 
-    const buffer_ptr = buffer_val.getTypedArrayBuffer(context) orelse {
+    // Get buffer data 
+    const buffer_info = buffer_val.getTypedArrayBuffer(context) orelse {
         log.err("audioPlayBufferWrapper: Failed to get buffer data", .{});
         return Value.initBool(false);
     };
-    const buffer_len = buffer_val.getTypedArrayLength(context) catch {
-        log.err("audioPlayBufferWrapper: Failed to get buffer length", .{});
-        return Value.initBool(false);
-    };
+    defer buffer_info.value.deinit(context);
+    const buffer_len = buffer_info.byte_length;
 
     // Get sample rate
     const sample_rate_val: Value = @bitCast(argv[1]);
@@ -216,7 +215,10 @@ fn audioPlayBufferWrapper(
     const channels_val: Value = @bitCast(argv[2]);
     const channels = channels_val.toInt32(context) catch return Value.initBool(false);
 
-    log.info("audioPlayBufferWrapper: Playing buffer: {} samples, {} Hz, {} channels", .{buffer_len / @as(usize, @intFromFloat(f32, @floatCast(sample_rate))), @as(u32, @intFromFloat(f32, @floatCast(sample_rate))), channels});
+    const sample_rate_u32: u32 = @intFromFloat(sample_rate);
+    const sample_rate_f32: f32 = @floatCast(sample_rate);
+    const samples_per_channel = buffer_len / @as(usize, @intFromFloat(sample_rate_f32));
+    log.info("audioPlayBufferWrapper: Playing buffer: {} samples, {} Hz, {} channels", .{samples_per_channel, sample_rate_u32, channels});
 
     // For now, we'll log this as a stub - full implementation would require
     // converting Float32Array to PCM data and playing via miniaudio

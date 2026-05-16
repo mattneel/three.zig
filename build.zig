@@ -359,6 +359,24 @@ pub fn build(b: *std.Build) void {
         linkDawnConsumer(b, lib_unit_tests, target, dawn);
         lib_unit_tests.linkLibrary(zglfw_dep.?.artifact("glfw"));
 
+        // Add miniaudio for audio bridge tests
+        const miniaudio_dep = b.dependency("miniaudio", .{});
+        lib_unit_tests.addIncludePath(miniaudio_dep.path(""));
+        lib_unit_tests.addCSourceFile(.{
+            .file = miniaudio_dep.path("miniaudio.c"),
+            .flags = &.{"-std=c99"},
+        });
+
+        // Platform-specific linking for miniaudio
+        if (target.result.os.tag == .linux and !is_android) {
+            lib_unit_tests.linkSystemLibrary("pthread");
+            lib_unit_tests.linkSystemLibrary("m");
+            lib_unit_tests.linkSystemLibrary("dl");
+        } else if (target.result.os.tag == .macos) {
+            lib_unit_tests.linkFramework("CoreAudio");
+            lib_unit_tests.linkFramework("AudioToolbox");
+        }
+
         // Add lazy dependencies to the test module so tests can use them
         if (b.lazyDependency("zignal", .{})) |zignal_dep| {
             lib_unit_tests.root_module.addImport("zignal", zignal_dep.module("zignal"));
