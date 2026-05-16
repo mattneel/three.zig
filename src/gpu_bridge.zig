@@ -4817,3 +4817,66 @@ test "gpuRenderPipelineGetBindGroupLayout returns a bind_group_layout handle" {
     // getBindGroupLayout on a null pipeline also returns null
     try testing.expect(result.value.isNull());
 }
+
+test "gpuCommandEncoderBeginComputePass with real hardware" {
+    var ht = try HandleTable.init(testing.allocator, 32);
+    defer ht.deinit(testing.allocator);
+
+    const context_result = try createTestGpuContext(testing.allocator);
+    const gctx = context_result[0];
+    const glfw_window = context_result[1];
+    defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, gctx);
+    defer bridge.deinit();
+
+    var engine = try JsEngine.init(testing.allocator);
+    defer engine.deinit();
+
+    try bridge.register(engine.context);
+
+    const js_src =
+        \\(function() {
+        \\  var devId = __native.gpuRequestDevice(0);
+        \\  var encId = __native.gpuCreateCommandEncoder(devId);
+        \\  var passId = __native.gpuCommandEncoderBeginComputePass(encId);
+        \\  return typeof passId === 'number' && passId > 0;
+        \\})()
+    ;
+    var result = try engine.eval(js_src, "<test>");
+    defer result.deinit();
+
+    try testing.expectEqual(@as(i32, 1), try result.toInt32());
+}
+
+test "gpuComputePassEncoderEnd with real hardware" {
+    var ht = try HandleTable.init(testing.allocator, 32);
+    defer ht.deinit(testing.allocator);
+
+    const context_result = try createTestGpuContext(testing.allocator);
+    const gctx = context_result[0];
+    const glfw_window = context_result[1];
+    defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, gctx);
+    defer bridge.deinit();
+
+    var engine = try JsEngine.init(testing.allocator);
+    defer engine.deinit();
+
+    try bridge.register(engine.context);
+
+    const js_src =
+        \\(function() {
+        \\  var devId = __native.gpuRequestDevice(0);
+        \\  var encId = __native.gpuCreateCommandEncoder(devId);
+        \\  var passId = __native.gpuCommandEncoderBeginComputePass(encId);
+        \\  var result = __native.gpuComputePassEncoderEnd(passId);
+        \\  return result === undefined;
+        \\})()
+    ;
+    var result = try engine.eval(js_src, "<test>");
+    defer result.deinit();
+
+    try testing.expectEqual(@as(i32, 1), try result.toInt32());
+}
