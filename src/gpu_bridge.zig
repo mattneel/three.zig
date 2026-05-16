@@ -17,6 +17,57 @@ const DawnHandle = handle_table.DawnHandle;
 const descriptor = @import("descriptor.zig");
 const FpsOverlay = @import("fps_overlay.zig").FpsOverlay;
 
+/// Test helper: creates a real GPU context with GLFW window for hardware testing
+pub fn createTestGpuContext(allocator: std.mem.Allocator) !struct { *dawn.GraphicsContext, *anyopaque } {
+    const builtin = @import("builtin");
+    const zglfw = @import("zglfw");
+
+    // Force X11 only on Linux (Wayland+Vulkan doesn't present on WSLg)
+    if (builtin.os.tag == .linux) {
+        try zglfw.initHint(.platform, zglfw.Platform.x11);
+    }
+
+    // Initialize GLFW
+    try zglfw.init();
+
+    // Tell GLFW we do not want an OpenGL context
+    zglfw.WindowHint.set(.client_api, .no_api);
+
+    // Hide the window for testing
+    zglfw.WindowHint.set(.visible, false);
+
+    // Create a window for testing
+    const glfw_window = try zglfw.createWindow(640, 480, "Test", null, null);
+    errdefer zglfw.destroyWindow(glfw_window);
+
+    // Build the WindowProvider that Dawn needs
+    const window_provider = dawn.WindowProvider{
+        .window = @ptrCast(glfw_window),
+        .fn_getTime = @ptrCast(&zglfw.getTime),
+        .fn_getFramebufferSize = @ptrCast(&zglfw.Window.getFramebufferSize),
+        .fn_getX11Display = @ptrCast(&zglfw.getX11Display),
+        .fn_getX11Window = @ptrCast(&zglfw.getX11Window),
+        .fn_getWaylandDisplay = @ptrCast(&zglfw.getWaylandDisplay),
+        .fn_getWaylandSurface = @ptrCast(&zglfw.getWaylandWindow),
+        .fn_getCocoaWindow = @ptrCast(&zglfw.getCocoaWindow),
+        .fn_getWin32Window = @ptrCast(&zglfw.getWin32Window),
+    };
+
+    // Create real graphics context
+    const gctx = try dawn.GraphicsContext.create(allocator, window_provider, .{});
+    errdefer gctx.destroy(allocator);
+
+    return .{ gctx, @ptrCast(glfw_window) };
+}
+
+/// Test helper: destroys a GPU context created by createTestGpuContext
+pub fn destroyTestGpuContext(gctx: *dawn.GraphicsContext, glfw_window: *anyopaque, allocator: std.mem.Allocator) void {
+    const zglfw = @import("zglfw");
+    gctx.destroy(allocator);
+    zglfw.destroyWindow(@ptrCast(glfw_window));
+    zglfw.terminate();
+}
+
 /// The GPU bridge connects JavaScript WebGPU API calls to the pre-created
 /// Dawn adapter, device, and queue (source-built Dawn, not zgpu's prebuilt binaries).
 ///
@@ -3329,6 +3380,14 @@ test "gpuRequestDevice returns device handle ID as number" {
 
     try testing.expectEqual(bridge.device_id.index, returned_id.index);
     try testing.expectEqual(bridge.device_id.generation, returned_id.generation);
+}
+
+test "createTestGpuContext creates real GPU context" {
+    const gctx, const glfw_window = try createTestGpuContext(testing.allocator);
+    defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
+
+    // If we got here without crashing, the context was created successfully
+    try testing.expect(true);
 }
 
 test "gpuGetQueue returns queue handle ID as number" {
