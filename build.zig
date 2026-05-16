@@ -109,10 +109,11 @@ pub fn build(b: *std.Build) void {
     }
 
     // --- miniaudio (cross-platform audio) ---
-    exe.addIncludePath(b.path("deps/miniaudio"));
+    const miniaudio = b.dependency("miniaudio", .{});
+    exe.addIncludePath(miniaudio.path(""));
     exe.addCSourceFile(.{
-        .file = b.path("deps/miniaudio/miniaudio.c"),
-        .flags = &.{},
+        .file = miniaudio.path("miniaudio.c"),
+        .flags = &.{"-std=c99"},
     });
 
     // Platform-specific linking for miniaudio
