@@ -24,11 +24,11 @@ pub fn createTestGpuContext(allocator: std.mem.Allocator) !struct { *dawn.Graphi
 
     // Force X11 only on Linux (Wayland+Vulkan doesn't present on WSLg)
     if (builtin.os.tag == .linux) {
-        try zglfw.initHint(.platform, zglfw.Platform.x11);
+        zglfw.initHint(.platform, zglfw.Platform.x11) catch {};
     }
 
-    // Initialize GLFW
-    try zglfw.init();
+    // Initialize GLFW (idempotent - multiple calls are safe)
+    zglfw.init() catch {};
 
     // Tell GLFW we do not want an OpenGL context
     zglfw.WindowHint.set(.client_api, .no_api);
@@ -65,7 +65,7 @@ pub fn destroyTestGpuContext(gctx: *dawn.GraphicsContext, glfw_window: *anyopaqu
     const zglfw = @import("zglfw");
     gctx.destroy(allocator);
     zglfw.destroyWindow(@ptrCast(glfw_window));
-    zglfw.terminate();
+    // Don't terminate - GLFW stays initialized for other tests
 }
 
 /// The GPU bridge connects JavaScript WebGPU API calls to the pre-created
@@ -246,6 +246,16 @@ pub const GpuBridge = struct {
         // These need the GpuBridge pointer to access handle table and gctx.
         // We encode the *const GpuBridge pointer as f64 in closure data[0].
         const ht_ptr_num = Value.initFloat64(ptrToF64(self));
+
+        // gpuDeviceDestroy(deviceId) → undefined
+        const device_destroy_fn = Value.initCFunctionData(
+            ctx,
+            &gpuDeviceDestroyNative,
+            1,
+            0,
+            &.{ht_ptr_num},
+        );
+        native_obj.setPropertyStr(ctx, "gpuDeviceDestroy", device_destroy_fn) catch return error.JSError;
 
         // gpuCreateBuffer(deviceId, descriptor) → buffer handle ID
         const create_buffer_fn = Value.initCFunctionData(
@@ -632,6 +642,30 @@ fn gpuRequestDeviceNative(
 ) Value {
     // data[0] is the device handle ID as f64
     return @bitCast(func_data[0]);
+}
+
+/// __native.gpuDeviceDestroy(deviceId) → undefined
+fn gpuDeviceDestroyNative(
+    ctx_opt: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const ctx = ctx_opt orelse return Value.@"null";
+    const bridge = getBridgeFromData(ctx, func_data) orelse return Value.@"null";
+    const ht = bridge.handle_table_ptr;
+
+    if (argv.len < 1) return Value.@"null";
+
+    const device_val: Value = @bitCast(argv[0]);
+    const device_id = f64ToHandle(device_val.toFloat64(ctx) catch return Value.@"null");
+
+    // Just free the handle from the table - GraphicsContext handles actual device cleanup
+    ht.destroy(device_id) catch {};
+    ht.free(device_id) catch {};
+
+    return Value.undefined;
 }
 
 /// __native.gpuGetQueue(deviceId) → number (queue handle ID)
@@ -3388,6 +3422,34 @@ test "createTestGpuContext creates real GPU context" {
 
     // If we got here without crashing, the context was created successfully
     try testing.expect(true);
+}
+
+test "gpuDeviceDestroy with real hardware" {
+    const gctx, const glfw_window = try createTestGpuContext(testing.allocator);
+    defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
+
+    var ht = try HandleTable.init(testing.allocator, 32);
+    defer ht.deinit(testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, gctx);
+    defer bridge.deinit();
+
+    var engine = try JsEngine.init(testing.allocator);
+    defer engine.deinit();
+
+    try bridge.register(engine.context);
+
+    const js_src =
+        \\(function() {
+        \\  var devId = __native.gpuRequestDevice(0);
+        \\  var result = __native.gpuDeviceDestroy(devId);
+        \\  return result === undefined;
+        \\})()
+    ;
+    var result = try engine.eval(js_src, "<test>");
+    defer result.deinit();
+
+    try testing.expectEqual(@as(i32, 1), try result.toInt32());
 }
 
 test "gpuGetQueue returns queue handle ID as number" {
