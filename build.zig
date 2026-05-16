@@ -147,15 +147,6 @@ pub fn build(b: *std.Build) void {
         exe.linkLibrary(dep.artifact("glfw"));
     }
 
-    // zgpu — Windowing (GLFW) and WebGPU type definitions only.
-// Active WebGPU implementation uses source-built Dawn from build.zig.
-    const zgpu_dep = b.dependency("zgpu", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const zgpu_mod = zgpu_dep.module("root");
-    lib_mod.addImport("zgpu", zgpu_mod);
-    exe.root_module.addImport("zgpu", zgpu_mod);
     const dawn_mri_tool = addDawnMriTool(b);
     const dawn_prep_tool = addDawnPrepTool(b);
     const dawn = addNativeDawnBuild(b, target, dawn_mri_tool, dawn_prep_tool, android_ndk_root);
@@ -347,7 +338,6 @@ pub fn build(b: *std.Build) void {
                 .strip = strip_for_windows,
                 .imports = &.{
                     .{ .name = "quickjs", .module = qjs_mod },
-                    .{ .name = "zgpu", .module = zgpu_mod },
                     .{ .name = "zglfw", .module = zglfw_mod },
                 },
             }),
@@ -394,7 +384,6 @@ pub fn build(b: *std.Build) void {
                 .strip = strip_for_windows,
                 .imports = &.{
                     .{ .name = "quickjs", .module = qjs_mod },
-                    .{ .name = "zgpu", .module = zgpu_mod },
                     .{ .name = "zglfw", .module = zglfw_mod },
                 },
             }),
