@@ -62313,6 +62313,13 @@ var<${access}> ${name} : ${structName};`;
 
   // gltf-viewer.js
   async function main() {
+    const native = globalThis.__native;
+    if (native && typeof native.audioInit === "function") {
+      const audioInitResult = native.audioInit();
+      console.log("Audio initialized:", audioInitResult);
+    } else {
+      console.log("Native audio functions not available");
+    }
     const renderer = new WebGPURenderer({ antialias: false });
     await renderer.init();
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -62344,6 +62351,10 @@ var<${access}> ${name} : ${structName};`;
       (gltf) => {
         scene.add(gltf.scene);
         console.log("DamagedHelmet loaded successfully");
+        if (native && typeof native.audioPlaySound === "function") {
+          const playResult = native.audioPlaySound("assets/test_sound.wav");
+          console.log("Audio play result:", playResult);
+        }
       },
       (progress) => {
         if (progress.total > 0) {

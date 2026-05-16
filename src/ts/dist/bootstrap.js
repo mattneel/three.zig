@@ -1592,6 +1592,284 @@
     g2.Request = Request;
   }
 
+  // bootstrap/audio.ts
+  var audioInitialized = false;
+  var audioContext = null;
+  var AudioParam = class {
+    _value;
+    _automation = [];
+    constructor(defaultValue) {
+      this._value = defaultValue;
+    }
+    get value() {
+      return this._value;
+    }
+    set value(value) {
+      this._value = Math.max(0, value);
+    }
+    setValueAtTime(value, startTime) {
+      this._automation.push({ time: startTime, value });
+      this._value = value;
+    }
+    linearRampToValueAtTime(value, endTime) {
+      this._automation.push({ time: endTime, value });
+      this._value = value;
+    }
+    exponentialRampToValueAtTime(value, endTime) {
+      this._automation.push({ time: endTime, value });
+      this._value = value;
+    }
+    setTargetAtTime(target, startTime, timeConstant) {
+      this._automation.push({ time: startTime, value: target });
+      this._value = target;
+    }
+    setValueCurveAtTime(values, startTime, duration) {
+      if (values.length > 0) {
+        this._automation.push({ time: startTime, value: values[0] });
+        this._value = values[0];
+      }
+    }
+    cancelScheduledValues(cancelTime) {
+      this._automation = this._automation.filter((event) => event.time < cancelTime);
+    }
+    // Get the current value considering automation (simplified)
+    getCurrentValue(currentTime) {
+      return this._value;
+    }
+  };
+  var AudioContextPolyfill = class {
+    _state = "suspended";
+    _destination;
+    _volume = 1;
+    constructor() {
+      this._destination = new AudioDestinationNodePolyfill(this);
+    }
+    get state() {
+      return this._state;
+    }
+    get destination() {
+      return this._destination;
+    }
+    get currentTime() {
+      return performance.now() / 1e3;
+    }
+    async resume() {
+      const native = getNative();
+      if (native?.audioInit && !audioInitialized) {
+        const success = native.audioInit();
+        if (success) {
+          audioInitialized = true;
+          this._state = "running";
+        } else {
+          console.warn("Failed to initialize audio engine");
+        }
+      } else if (audioInitialized) {
+        this._state = "running";
+      }
+    }
+    async suspend() {
+      this._state = "suspended";
+    }
+    close() {
+      const native = getNative();
+      if (native?.audioShutdown && audioInitialized) {
+        native.audioShutdown();
+        audioInitialized = false;
+      }
+      this._state = "closed";
+      audioContext = null;
+      return Promise.resolve();
+    }
+    createBuffer(_numberOfChannels, _length, _sampleRate) {
+      return new AudioBufferPolyfill(_numberOfChannels, _length, _sampleRate);
+    }
+    createBufferSource() {
+      return new AudioBufferSourceNodePolyfill(this);
+    }
+    createGain() {
+      return new GainNodePolyfill(this);
+    }
+    createOscillator() {
+      return new OscillatorNodePolyfill(this);
+    }
+    set volume(volume) {
+      this._volume = Math.max(0, Math.min(1, volume));
+      const native = getNative();
+      if (native?.audioSetVolume) {
+        native.audioSetVolume(this._volume);
+      }
+    }
+    get volume() {
+      return this._volume;
+    }
+  };
+  var AudioBufferPolyfill = class {
+    numberOfChannels;
+    length;
+    sampleRate;
+    _channelData;
+    constructor(numberOfChannels, length, sampleRate) {
+      this.numberOfChannels = numberOfChannels;
+      this.length = length;
+      this.sampleRate = sampleRate;
+      this._channelData = [];
+      for (let i = 0; i < numberOfChannels; i++) {
+        this._channelData.push(new Float32Array(length));
+      }
+    }
+    getChannelData(channel) {
+      if (channel < 0 || channel >= this.numberOfChannels) {
+        throw new Error("Channel index out of range");
+      }
+      return this._channelData[channel];
+    }
+    copyFromChannel(_destination, _channelNumber, _startInChannel) {
+    }
+    copyToChannel(_source, _channelNumber, _startInChannel) {
+    }
+  };
+  var AudioNodePolyfill = class {
+    _context;
+    context;
+    _connections = /* @__PURE__ */ new Map();
+    constructor(context) {
+      this._context = context;
+      this.context = context;
+    }
+    connect(destination, output, input) {
+      this._connections.set(destination, { output, input });
+      return destination;
+    }
+    disconnect(destination, output, input) {
+      if (destination) {
+        this._connections.delete(destination);
+      } else {
+        this._connections.clear();
+      }
+    }
+    // Get all connected nodes
+    getConnections() {
+      return Array.from(this._connections.keys());
+    }
+    // Check if connected to a specific node
+    isConnectedTo(node) {
+      return this._connections.has(node);
+    }
+  };
+  var GainNodePolyfill = class extends AudioNodePolyfill {
+    gain;
+    constructor(context) {
+      super(context);
+      this.gain = new AudioParam(1);
+    }
+  };
+  var OscillatorNodePolyfill = class extends AudioNodePolyfill {
+    _type = "sine";
+    _frequency;
+    _detune;
+    _isPlaying = false;
+    constructor(context) {
+      super(context);
+      this._frequency = new AudioParam(440);
+      this._detune = new AudioParam(0);
+    }
+    get type() {
+      return this._type;
+    }
+    set type(value) {
+      this._type = value;
+    }
+    get frequency() {
+      return this._frequency;
+    }
+    get detune() {
+      return this._detune;
+    }
+    start(when) {
+      if (this._isPlaying) {
+        console.warn("Oscillator already playing");
+        return;
+      }
+      this._isPlaying = true;
+      console.log("OscillatorNode.start called - oscillator playback not yet implemented");
+    }
+    stop(when) {
+      if (!this._isPlaying) {
+        return;
+      }
+      this._isPlaying = false;
+      console.log("OscillatorNode.stop called - oscillator playback not yet implemented");
+    }
+  };
+  var AudioBufferSourceNodePolyfill = class extends AudioNodePolyfill {
+    _buffer = null;
+    _loop = false;
+    _autoplay = false;
+    _isPlaying = false;
+    constructor(context) {
+      super(context);
+    }
+    get buffer() {
+      return this._buffer;
+    }
+    set buffer(value) {
+      this._buffer = value;
+    }
+    get loop() {
+      return this._loop;
+    }
+    set loop(value) {
+      this._loop = value;
+    }
+    start(when, offset = 0, duration) {
+      if (!this._buffer) {
+        console.warn("AudioBufferSourceNode.start called without buffer");
+        return;
+      }
+      if (this._isPlaying) {
+        console.warn("AudioBufferSourceNode already playing");
+        return;
+      }
+      const native = getNative();
+      if (!native?.audioPlayBuffer) {
+        console.warn("Native buffer playback not available");
+        return;
+      }
+      const channelData = this._buffer.getChannelData(0);
+      const success = native.audioPlayBuffer(
+        channelData,
+        this._buffer.sampleRate,
+        this._buffer.numberOfChannels
+      );
+      if (success) {
+        this._isPlaying = true;
+      } else {
+        console.warn("Failed to play audio buffer");
+      }
+    }
+    stop(when) {
+      if (this._isPlaying) {
+        this._isPlaying = false;
+        console.log("AudioBufferSourceNode.stop called - buffer stop not yet implemented");
+      }
+    }
+  };
+  var AudioDestinationNodePolyfill = class extends AudioNodePolyfill {
+    maxChannelCount = 2;
+    constructor(context) {
+      super(context);
+    }
+  };
+  function installAudio() {
+    const g2 = globalThis;
+    if (typeof g2.AudioContext === "undefined") {
+      g2.AudioContext = AudioContextPolyfill;
+    }
+    if (typeof g2.webkitAudioContext === "undefined") {
+      g2.webkitAudioContext = AudioContextPolyfill;
+    }
+  }
+
   // bootstrap/index.ts
   var dom = createDOM();
   var g = globalThis;
@@ -1622,6 +1900,7 @@
   installImage();
   installAbort();
   installRequest();
+  installAudio();
   var _blobRegistry = /* @__PURE__ */ new Map();
   var _blobIdCounter = 0;
   var BlobPolyfill = class _BlobPolyfill {

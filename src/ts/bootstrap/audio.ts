@@ -11,6 +11,66 @@ let audioInitialized = false;
 let audioContext: AudioContextPolyfill | null = null;
 
 /**
+ * AudioParam - for controlling audio parameters over time.
+ */
+class AudioParam {
+  private _value: number;
+  private _automation: Array<{time: number, value: number}> = [];
+
+  constructor(defaultValue: number) {
+    this._value = defaultValue;
+  }
+
+  get value(): number {
+    return this._value;
+  }
+
+  set value(value: number) {
+    this._value = Math.max(0, value); // Most audio params are non-negative
+  }
+
+  setValueAtTime(value: number, startTime: number): void {
+    this._automation.push({ time: startTime, value });
+    this._value = value;
+  }
+
+  linearRampToValueAtTime(value: number, endTime: number): void {
+    this._automation.push({ time: endTime, value });
+    this._value = value;
+  }
+
+  exponentialRampToValueAtTime(value: number, endTime: number): void {
+    this._automation.push({ time: endTime, value });
+    this._value = value;
+  }
+
+  setTargetAtTime(target: number, startTime: number, timeConstant: number): void {
+    // Simplified - just set the target value immediately
+    this._automation.push({ time: startTime, value: target });
+    this._value = target;
+  }
+
+  setValueCurveAtTime(values: Float32Array, startTime: number, duration: number): void {
+    // Simplified - just use the first value
+    if (values.length > 0) {
+      this._automation.push({ time: startTime, value: values[0] });
+      this._value = values[0];
+    }
+  }
+
+  cancelScheduledValues(cancelTime: number): void {
+    this._automation = this._automation.filter(event => event.time < cancelTime);
+  }
+
+  // Get the current value considering automation (simplified)
+  getCurrentValue(currentTime: number): number {
+    // For now, just return the current value
+    // A full implementation would interpolate between automation points
+    return this._value;
+  }
+}
+
+/**
  * Minimal AudioContext implementation.
  */
 class AudioContextPolyfill {
@@ -77,6 +137,14 @@ class AudioContextPolyfill {
     return new AudioBufferSourceNodePolyfill(this);
   }
 
+  createGain(): GainNodePolyfill {
+    return new GainNodePolyfill(this);
+  }
+
+  createOscillator(): OscillatorNodePolyfill {
+    return new OscillatorNodePolyfill(this);
+  }
+
   set volume(volume: number) {
     this._volume = Math.max(0.0, Math.min(1.0, volume));
     const native = getNative();
@@ -131,20 +199,99 @@ class AudioBufferPolyfill {
 class AudioNodePolyfill {
   protected _context: AudioContextPolyfill;
   readonly context: AudioContextPolyfill;
+  protected _connections: Map<AudioNodePolyfill, {output?: number, input?: number}> = new Map();
 
   constructor(context: AudioContextPolyfill) {
     this._context = context;
     this.context = context;
   }
 
-  connect(_destination: AudioNodePolyfill): void {
-    // Stub implementation
+  connect(destination: AudioNodePolyfill, output?: number, input?: number): AudioNodePolyfill {
+    this._connections.set(destination, { output, input });
+    return destination;
   }
 
-  disconnect(): void {
-    // Stub implementation
+  disconnect(destination?: AudioNodePolyfill, output?: number, input?: number): void {
+    if (destination) {
+      this._connections.delete(destination);
+    } else {
+      this._connections.clear();
+    }
+  }
+
+  // Get all connected nodes
+  getConnections(): AudioNodePolyfill[] {
+    return Array.from(this._connections.keys());
+  }
+
+  // Check if connected to a specific node
+  isConnectedTo(node: AudioNodePolyfill): boolean {
+    return this._connections.has(node);
   }
 }
+
+/**
+ * Minimal GainNode implementation for volume control.
+ */
+class GainNodePolyfill extends AudioNodePolyfill {
+  readonly gain: AudioParam;
+
+  constructor(context: AudioContextPolyfill) {
+    super(context);
+    this.gain = new AudioParam(1.0);
+  }
+}
+
+/**
+ * Minimal OscillatorNode implementation for procedural sound generation.
+ */
+class OscillatorNodePolyfill extends AudioNodePolyfill {
+  private _type: OscillatorType = "sine";
+  private _frequency: AudioParam;
+  private _detune: AudioParam;
+  private _isPlaying: boolean = false;
+
+  constructor(context: AudioContextPolyfill) {
+    super(context);
+    this._frequency = new AudioParam(440); // A4
+    this._detune = new AudioParam(0);
+  }
+
+  get type(): OscillatorType {
+    return this._type;
+  }
+
+  set type(value: OscillatorType) {
+    this._type = value;
+  }
+
+  get frequency(): AudioParam {
+    return this._frequency;
+  }
+
+  get detune(): AudioParam {
+    return this._detune;
+  }
+
+  start(when?: number): void {
+    if (this._isPlaying) {
+      console.warn("Oscillator already playing");
+      return;
+    }
+    this._isPlaying = true;
+    console.log("OscillatorNode.start called - oscillator playback not yet implemented");
+  }
+
+  stop(when?: number): void {
+    if (!this._isPlaying) {
+      return;
+    }
+    this._isPlaying = false;
+    console.log("OscillatorNode.stop called - oscillator playback not yet implemented");
+  }
+}
+
+type OscillatorType = "sine" | "square" | "sawtooth" | "triangle" | "custom";
 
 /**
  * Minimal AudioBufferSourceNode implementation.
@@ -153,6 +300,7 @@ class AudioBufferSourceNodePolyfill extends AudioNodePolyfill {
   private _buffer: AudioBufferPolyfill | null = null;
   private _loop: boolean = false;
   private _autoplay: boolean = false;
+  private _isPlaying: boolean = false;
 
   constructor(context: AudioContextPolyfill) {
     super(context);
@@ -174,13 +322,44 @@ class AudioBufferSourceNodePolyfill extends AudioNodePolyfill {
     this._loop = value;
   }
 
-  start(when?: number, offset?: number, duration?: number): void {
-    // For now, we'll just log - actual audio playback would need more work
-    console.log("AudioBufferSourceNode.start called - audio playback not fully implemented");
+  start(when?: number, offset: number = 0, duration?: number): void {
+    if (!this._buffer) {
+      console.warn("AudioBufferSourceNode.start called without buffer");
+      return;
+    }
+
+    if (this._isPlaying) {
+      console.warn("AudioBufferSourceNode already playing");
+      return;
+    }
+
+    const native = getNative();
+    if (!native?.audioPlayBuffer) {
+      console.warn("Native buffer playback not available");
+      return;
+    }
+
+    // Get the first channel data (mono for simplicity)
+    const channelData = this._buffer.getChannelData(0);
+    const success = native.audioPlayBuffer(
+      channelData,
+      this._buffer.sampleRate,
+      this._buffer.numberOfChannels
+    );
+
+    if (success) {
+      this._isPlaying = true;
+    } else {
+      console.warn("Failed to play audio buffer");
+    }
   }
 
   stop(when?: number): void {
-    console.log("AudioBufferSourceNode.stop called");
+    if (this._isPlaying) {
+      this._isPlaying = false;
+      // Note: We don't have a native stop function for buffer playback yet
+      console.log("AudioBufferSourceNode.stop called - buffer stop not yet implemented");
+    }
   }
 }
 

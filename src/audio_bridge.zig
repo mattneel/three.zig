@@ -57,6 +57,10 @@ pub const AudioBridge = struct {
         // audioSetVolume(volume) — set volume (0.0 to 1.0)
         const audio_set_volume_fn = Value.initCFunctionData(ctx, &audioSetVolumeWrapper, 1, 0, &.{});
         native_obj.setPropertyStr(ctx, "audioSetVolume", audio_set_volume_fn) catch return error.JSError;
+
+        // audioPlayBuffer(buffer, sampleRate, channels) — play audio buffer data
+        const audio_play_buffer_fn = Value.initCFunctionData(ctx, &audioPlayBufferWrapper, 3, 0, &.{});
+        native_obj.setPropertyStr(ctx, "audioPlayBuffer", audio_play_buffer_fn) catch return error.JSError;
         
         log.info("Audio functions registered successfully", .{});
     }
@@ -171,4 +175,53 @@ fn audioSetVolumeWrapper(
     }
 
     return Value.undefined;
+}
+
+fn audioPlayBufferWrapper(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    _: [*c]c.JSValue,
+) Value {
+    log.info("audioPlayBufferWrapper called", .{});
+    const context = ctx orelse return Value.undefined;
+
+    if (argv.len < 3) {
+        log.err("audioPlayBufferWrapper: Not enough arguments", .{});
+        return Value.initBool(false);
+    }
+
+    // Get buffer data (Float32Array)
+    const buffer_val: Value = @bitCast(argv[0]);
+    if (buffer_val.isNull() or buffer_val.isUndefined()) {
+        log.err("audioPlayBufferWrapper: Buffer is null or undefined", .{});
+        return Value.initBool(false);
+    }
+
+    const buffer_ptr = buffer_val.getTypedArrayBuffer(context) orelse {
+        log.err("audioPlayBufferWrapper: Failed to get buffer data", .{});
+        return Value.initBool(false);
+    };
+    const buffer_len = buffer_val.getTypedArrayLength(context) catch {
+        log.err("audioPlayBufferWrapper: Failed to get buffer length", .{});
+        return Value.initBool(false);
+    };
+
+    // Get sample rate
+    const sample_rate_val: Value = @bitCast(argv[1]);
+    const sample_rate = sample_rate_val.toFloat64(context) catch return Value.initBool(false);
+
+    // Get number of channels
+    const channels_val: Value = @bitCast(argv[2]);
+    const channels = channels_val.toInt32(context) catch return Value.initBool(false);
+
+    log.info("audioPlayBufferWrapper: Playing buffer: {} samples, {} Hz, {} channels", .{buffer_len / @as(usize, @intFromFloat(f32, @floatCast(sample_rate))), @as(u32, @intFromFloat(f32, @floatCast(sample_rate))), channels});
+
+    // For now, we'll log this as a stub - full implementation would require
+    // converting Float32Array to PCM data and playing via miniaudio
+    // This would need additional native functions for memory-based playback
+    log.info("audioPlayBufferWrapper: Buffer playback not yet implemented", .{});
+
+    return Value.initBool(false);
 }
