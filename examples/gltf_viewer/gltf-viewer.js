@@ -14,6 +14,15 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 async function main() {
+  // --- Audio initialization ---
+  const native = globalThis.__native;
+  if (native && typeof native.audioInit === 'function') {
+    const audioInitResult = native.audioInit();
+    console.log("Audio initialized:", audioInitResult);
+  } else {
+    console.log("Native audio functions not available");
+  }
+
   // --- Renderer ---
   const renderer = new WebGPURenderer({ antialias: false });
   await renderer.init();
@@ -58,6 +67,13 @@ async function main() {
     (gltf) => {
       scene.add(gltf.scene);
       console.log("DamagedHelmet loaded successfully");
+
+      // Play audio when model loads
+      if (native && typeof native.audioPlaySound === 'function') {
+        // Use correct path for Android assets
+        const playResult = native.audioPlaySound("assets/test_sound.wav");
+        console.log("Audio play result:", playResult);
+      }
     },
     (progress) => {
       if (progress.total > 0) {

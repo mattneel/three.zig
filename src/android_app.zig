@@ -62,6 +62,9 @@ pub fn run(opaque_app: *anyopaque) void {
         if (activity.*.assetManager != null) {
             app.asset_manager = activity.*.assetManager;
             fetch.setAssetManager(@ptrCast(activity.*.assetManager));
+            // Also expose to miniaudio for audio asset loading
+            const miniaudio = @import("miniaudio.zig");
+            miniaudio.setAssetManager(@ptrCast(activity.*.assetManager));
             logInfo("AAssetManager registered");
         }
         if (activity.*.internalDataPath != null) {

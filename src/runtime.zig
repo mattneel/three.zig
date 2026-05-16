@@ -13,6 +13,7 @@ const Window = @import("window.zig").Window;
 const HandleTable = @import("handle_table.zig").HandleTable;
 const GpuBridge = @import("gpu_bridge.zig").GpuBridge;
 const EventBridge = @import("event_bridge.zig").EventBridge;
+const AudioBridge = @import("audio_bridge.zig").AudioBridge;
 
 const log = std.log.scoped(.runtime);
 
@@ -35,6 +36,7 @@ pub const RuntimeConfig = struct {
 const CallbackState = struct {
     event_bridge: *EventBridge,
     gpu_bridge: *GpuBridge,
+    audio_bridge: *AudioBridge,
 };
 
 const PromiseTrackerState = struct {
@@ -49,6 +51,7 @@ pub const Runtime = struct {
     timer_queue: TimerQueue,
     handle_table: HandleTable,
     gpu_bridge: GpuBridge,
+    audio_bridge: AudioBridge,
     event_loop: EventLoop,
     event_bridge: EventBridge,
     callback_state: CallbackState,
@@ -93,6 +96,10 @@ pub const Runtime = struct {
         errdefer event_loop.deinit();
         event_loop.setFailFast(config.error_mode == .fail_fast);
         try event_loop_mod.register(engine.context, &event_loop);
+
+        var audio_bridge = try AudioBridge.init();
+        defer audio_bridge.deinit();
+        try audio_bridge.register(engine.context);
         try syncAnimationFrameGlobals(&engine);
 
         const js_window = blk: {
@@ -162,6 +169,7 @@ pub const Runtime = struct {
             .timer_queue = timer_queue,
             .handle_table = handle_table,
             .gpu_bridge = gpu_bridge,
+            .audio_bridge = audio_bridge,
             .event_loop = event_loop,
             .event_bridge = event_bridge,
             .callback_state = undefined,
@@ -184,6 +192,7 @@ pub const Runtime = struct {
         runtime.callback_state = .{
             .event_bridge = &runtime.event_bridge,
             .gpu_bridge = &runtime.gpu_bridge,
+            .audio_bridge = &runtime.audio_bridge,
         };
 
         runtime.window.glfw_window.setUserPointer(@ptrCast(&runtime.callback_state));
@@ -218,6 +227,7 @@ pub const Runtime = struct {
 
         self.event_bridge.deinit();
         self.event_loop.deinit();
+        self.audio_bridge.deinit();
         self.gpu_bridge.deinit();
         self.handle_table.deinit(self.allocator);
         self.timer_queue.deinit(self.engine.context);

@@ -108,6 +108,30 @@ pub fn build(b: *std.Build) void {
         exe.forceUndefinedSymbol("ANativeActivity_onCreate");
     }
 
+    // --- miniaudio (cross-platform audio) ---
+    exe.addIncludePath(b.path("deps/miniaudio"));
+    exe.addCSourceFile(.{
+        .file = b.path("deps/miniaudio/miniaudio.c"),
+        .flags = &.{},
+    });
+
+    // Platform-specific linking for miniaudio
+    if (target.result.os.tag == .linux and !is_android) {
+        exe.linkSystemLibrary("pthread");
+        exe.linkSystemLibrary("m");
+        exe.linkSystemLibrary("dl");
+    } else if (target.result.os.tag == .windows) {
+        // Windows: no extra linking needed
+    } else if (target.result.os.tag == .macos) {
+        // macOS: needs to be compiled as Objective-C
+        exe.linkFramework("CoreAudio");
+        exe.linkFramework("AudioToolbox");
+        exe.linkFramework("CoreFoundation");
+    } else if (is_android) {
+        // Android: OpenSL|ES is built-in, no pthread linking needed
+        exe.linkSystemLibrary("OpenSLES");
+    }
+
     // --- Dependencies ---
 
     // zglfw — GLFW windowing library (not available on Android)
@@ -925,13 +949,42 @@ fn addNativeDawnBuild(
         }) catch @panic("OOM");
     }
 
-    const configure = b.addSystemCommand(cmake_args.items);
-    if (windows_sdk) |sdk| {
-        configure.setEnvironmentVariable("WINDOWSSDKDIR", sdk.path);
-        configure.setEnvironmentVariable("WINDOWSSDKVERSION", sdk.version);
+    const configure_stamp = b.fmt("{s}/configured-{s}-{s}", .{ stamp_dir, dawn_commit, target_key });
+    
+    // Create a configure check tool that runs cmake when needed
+    const configure_check_exe = b.addExecutable(.{
+        .name = "dawn-configure-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build/dawn_configure_check.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseSafe,
+        }),
+    });
+    
+    // Create a configure step that checks if reconfiguration is needed and runs cmake if so
+    const configure_check = b.addRunArtifact(configure_check_exe);
+    configure_check.addArgs(&.{ src_dir, build_dir, configure_stamp });
+    
+    // Pass all the cmake args to the configure tool so it can run cmake when needed
+    for (cmake_args.items) |arg| {
+        configure_check.addArg(arg);
     }
-    configure.has_side_effects = true;
-    configure.step.dependOn(&prepare.step);
+    
+    // Add file dependencies for key CMake files
+    const cmake_files = [_][]const u8{
+        "CMakeLists.txt",
+        "cmake/Config.cmake",
+        "cmake/DawnDependencies.cmake",
+        "cmake/DawnUtils.cmake",
+        "cmake/TintDependencies.cmake",
+    };
+    for (cmake_files) |cmake_file| {
+        const cmake_path = b.fmt("{s}/{s}", .{ src_dir, cmake_file });
+        configure_check.addFileInput(.{ .cwd_relative = cmake_path });
+    }
+    
+    configure_check.has_side_effects = true;
+    configure_check.step.dependOn(&prepare.step);
 
     const build_dawn = b.addSystemCommand(&.{
         "cmake",
@@ -951,7 +1004,7 @@ fn addNativeDawnBuild(
         build_dawn.setEnvironmentVariable("WINDOWSSDKVERSION", sdk.version);
     }
     build_dawn.has_side_effects = true;
-    build_dawn.step.dependOn(&configure.step);
+    build_dawn.step.dependOn(&configure_check.step);
 
     const mri = b.addRunArtifact(dawn_mri_tool);
     mri.addArgs(&.{ build_dir, out_lib });

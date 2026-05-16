@@ -130,6 +130,17 @@ export interface NativeBridge {
   gpuGetCurrentTexture?(): number;
   /** Signal frame present after queue.submit. */
   gpuPresent?(): void;
+
+  // --- Audio functions ---
+
+  /** Initialize the audio engine. */
+  audioInit?(): boolean;
+  /** Shutdown the audio engine. */
+  audioShutdown?(): void;
+  /** Play a sound file. */
+  audioPlaySound?(path: string): boolean;
+  /** Set volume for audio engine (0.0 to 1.0). */
+  audioSetVolume?(volume: number): void;
 }
 
 /**

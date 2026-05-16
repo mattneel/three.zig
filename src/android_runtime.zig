@@ -16,6 +16,7 @@ const EventLoop = event_loop_mod.EventLoop;
 const HandleTable = @import("handle_table.zig").HandleTable;
 const GpuBridge = @import("gpu_bridge.zig").GpuBridge;
 const EventBridge = @import("event_bridge.zig").EventBridge;
+const AudioBridge = @import("audio_bridge.zig").AudioBridge;
 const AndroidWindow = @import("android_window.zig").AndroidWindow;
 
 const log = std.log.scoped(.runtime);
@@ -28,6 +29,7 @@ pub const AndroidRuntime = struct {
     gpu_bridge: GpuBridge,
     event_loop: EventLoop,
     event_bridge: EventBridge,
+    audio_bridge: AudioBridge,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -92,6 +94,10 @@ pub const AndroidRuntime = struct {
         own_js_canvas = false;
         errdefer event_bridge.deinit();
 
+        var audio_bridge = try AudioBridge.init();
+        errdefer audio_bridge.deinit();
+        try audio_bridge.register(engine.context);
+
         // Set __scriptDir to empty — Android assets use AAssetManager
         try setScriptDir(engine.context, "");
 
@@ -105,6 +111,7 @@ pub const AndroidRuntime = struct {
             .gpu_bridge = gpu_bridge,
             .event_loop = event_loop,
             .event_bridge = event_bridge,
+            .audio_bridge = audio_bridge,
         };
 
         // Fix up pointers after move to heap
@@ -145,6 +152,7 @@ pub const AndroidRuntime = struct {
     }
 
     pub fn deinit(self: *AndroidRuntime) void {
+        self.audio_bridge.deinit();
         self.event_bridge.deinit();
         self.event_loop.deinit();
         self.gpu_bridge.deinit();

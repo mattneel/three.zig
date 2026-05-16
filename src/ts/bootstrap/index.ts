@@ -14,6 +14,7 @@ import { installImage } from "./image";
 import { installWebGPUConstants } from "./webgpu-constants";
 import { installAbort } from "./abort";
 import { installRequest } from "./request";
+import { installAudio } from "./audio";
 
 // Create the wired-up DOM instances
 const dom = createDOM();
@@ -67,6 +68,9 @@ installAbort();
 
 // Install Request / Headers polyfills
 installRequest();
+
+// Install Web Audio API polyfill
+installAudio();
 
 // ---------------------------------------------------------------------------
 // Blob + URL.createObjectURL / revokeObjectURL
