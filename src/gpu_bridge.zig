@@ -6172,6 +6172,24 @@ test "gpuRenderBundleEncoderFinish validates args and frees encoder" {
 // Phase 9a: QuerySet — lifecycle (create + destroy)
 // ---------------------------------------------------------------------------
 
+test "gpuCreateQuerySet with real hardware" {
+    var ht = try HandleTable.init(testing.allocator, 32);
+    defer ht.deinit(testing.allocator);
+
+    const context_result = try createTestGpuContext(testing.allocator);
+    const gctx = context_result[0];
+    const glfw_window = context_result[1];
+    defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
+
+    const device: wgpu.Device = @ptrCast(gctx.device);
+    var desc = std.mem.zeroes(wgpu.QuerySetDescriptor);
+    desc.query_type = .occlusion;
+    desc.count = 1;
+    const qs = device.createQuerySet(desc);
+    defer qs.release();
+    try testing.expect(@intFromPtr(qs) != 0);
+}
+
 test "gpuCreateQuerySet validates args and returns null without gctx" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
