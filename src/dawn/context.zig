@@ -190,6 +190,20 @@ pub const GraphicsContext = struct {
         log.info("surface resized to {}x{}", .{ width, height });
     }
 
+    /// Configure the surface format and alpha mode from JS-side strings.
+    /// Keeps existing width/height and other config fields, only updates
+    /// format and alphaMode then calls wgpuSurfaceConfigure.
+    pub fn configureSurface(self: *GraphicsContext, format_str: []const u8, alpha_mode_str: []const u8) void {
+        self.releaseCurrentSurfaceFrame();
+        self.surface_config.format = surfaceFormatFromString(format_str);
+        self.surface_config.alphaMode = alphaModeFromString(alpha_mode_str);
+        raw.c.wgpuSurfaceConfigure(@ptrCast(self.surface), &self.surface_config);
+        log.info("surface reconfigured: format={d} alphaMode={d}", .{
+            self.surface_config.format,
+            self.surface_config.alphaMode,
+        });
+    }
+
     pub fn getCurrentTextureView(self: *GraphicsContext) ?wgpu.TextureView {
         if (self.current_surface_view) |view| return view;
 
@@ -477,6 +491,28 @@ fn chooseCompositeAlphaMode(caps: raw.c.WGPUSurfaceCapabilities) raw.c.WGPUCompo
     return raw.c.WGPUCompositeAlphaMode_Auto;
 }
 
+/// Map a WebGPU format string (e.g. "bgra8unorm") to a WGPUTextureFormat enum.
+fn surfaceFormatFromString(format_str: []const u8) raw.c.WGPUTextureFormat {
+    const map = [_]struct { []const u8, raw.c.WGPUTextureFormat }{
+        .{ "bgra8unorm", raw.c.WGPUTextureFormat_BGRA8Unorm },
+        .{ "bgra8unorm-srgb", raw.c.WGPUTextureFormat_BGRA8UnormSrgb },
+        .{ "rgba8unorm", raw.c.WGPUTextureFormat_RGBA8Unorm },
+        .{ "rgba8unorm-srgb", raw.c.WGPUTextureFormat_RGBA8UnormSrgb },
+        .{ "rgba16float", raw.c.WGPUTextureFormat_RGBA16Float },
+    };
+    for (map) |entry| {
+        if (std.mem.eql(u8, format_str, entry[0])) return entry[1];
+    }
+    return raw.c.WGPUTextureFormat_BGRA8Unorm;
+}
+
+/// Map a canvas alpha mode string to a WGPUCompositeAlphaMode enum.
+fn alphaModeFromString(alpha_mode_str: []const u8) raw.c.WGPUCompositeAlphaMode {
+    if (std.mem.eql(u8, alpha_mode_str, "opaque")) return raw.c.WGPUCompositeAlphaMode_Opaque;
+    if (std.mem.eql(u8, alpha_mode_str, "premultiplied")) return raw.c.WGPUCompositeAlphaMode_Premultiplied;
+    return raw.c.WGPUCompositeAlphaMode_Auto;
+}
+
 fn logUnhandledError(
     device: [*c]const raw.c.WGPUDevice,
     err_type: raw.c.WGPUErrorType,
@@ -501,7 +537,7 @@ fn logUnhandledError(
 /// (Vulkan adapter warnings, surface diagnostics, etc.) during tests.
 fn suppressLogging(
     log_type: wgpu.LoggingType,
-    message: ?[*:0]const u8,
+    message: wgpu.StringView,
     userdata: ?*anyopaque,
 ) callconv(.c) void {
     _ = log_type;

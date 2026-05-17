@@ -890,6 +890,9 @@ fn gpuRequestDeviceNative(
 }
 
 /// __native.gpuDeviceDestroy(deviceId) → undefined
+///
+/// Destroys the Dawn device and releases the handle. Per the WebGPU spec,
+/// this invalidates all child objects (queue, pipelines, buffers, etc.).
 fn gpuDeviceDestroyNative(
     ctx_opt: ?*Context,
     _: Value,
@@ -906,7 +909,13 @@ fn gpuDeviceDestroyNative(
     const device_val: Value = @bitCast(argv[0]);
     const device_id = f64ToHandle(device_val.toFloat64(ctx) catch return Value.@"null");
 
-    // Just free the handle from the table - GraphicsContext handles actual device cleanup
+    // Get the Dawn device from the handle table and destroy it
+    if (ht.get(device_id)) |entry| {
+        if (entry.handle.as(wgpu.Device)) |device| {
+            device.destroy();
+        }
+    } else |_| {}
+
     ht.destroy(device_id) catch {};
     ht.free(device_id) catch {};
 
@@ -2061,6 +2070,9 @@ fn gpuCreateRenderPipelineNative(
 }
 
 /// __native.gpuCreateComputePipeline(deviceId, descriptor) → number (handle ID)
+///
+/// Parses the compute pipeline descriptor (compute stage with module + entryPoint)
+/// and creates a real wgpu ComputePipeline.
 fn gpuCreateComputePipelineNative(
     ctx: ?*Context,
     _: Value,
@@ -2068,7 +2080,62 @@ fn gpuCreateComputePipelineNative(
     _: c_int,
     func_data: [*c]c.JSValue,
 ) Value {
-    return allocPipelineHandle(ctx, argv, func_data, .{ .compute_pipeline = null });
+    const context = ctx orelse return Value.@"null";
+    const bridge = getBridgeFromData(context, func_data) orelse return Value.@"null";
+    const ht = bridge.handle_table_ptr;
+    const gctx = bridge.gctx orelse return Value.@"null";
+
+    if (argv.len < 2) return Value.@"null";
+
+    const desc_val: Value = @bitCast(argv[1]);
+
+    // --- layout (optional, "auto" means null) ---
+    var pipeline_layout: ?wgpu.PipelineLayout = null;
+    const layout_val = desc_val.getPropertyStr(context, "layout");
+    defer layout_val.deinit(context);
+    if (!layout_val.isUndefined() and !layout_val.isNull()) {
+        if (layout_val.isNumber()) {
+            const layout_f64 = layout_val.toFloat64(context) catch 0;
+            if (layout_f64 > 0) {
+                const layout_id = f64ToHandle(layout_f64);
+                if (ht.get(layout_id)) |entry| {
+                    pipeline_layout = entry.handle.as(wgpu.PipelineLayout);
+                } else |_| {}
+            }
+        }
+    }
+
+    // --- compute stage ---
+    const compute_val = desc_val.getPropertyStr(context, "compute");
+    defer compute_val.deinit(context);
+    if (compute_val.isUndefined() or compute_val.isNull()) return Value.@"null";
+
+    // compute.module (shader module handle ID)
+    const cm_val = compute_val.getPropertyStr(context, "module");
+    defer cm_val.deinit(context);
+    const cm_f64 = cm_val.toFloat64(context) catch return Value.@"null";
+    const cm_entry = ht.get(f64ToHandle(cm_f64)) catch return Value.@"null";
+    const compute_module: wgpu.ShaderModule = cm_entry.handle.as(wgpu.ShaderModule) orelse return Value.@"null";
+
+    // compute.entryPoint — null means use "main"
+    const cep_val = compute_val.getPropertyStr(context, "entryPoint");
+    defer cep_val.deinit(context);
+    const compute_ep_owned = if (cep_val.isUndefined() or cep_val.isNull()) null else cep_val.toCString(context);
+    defer if (compute_ep_owned) |s| context.freeCString(s);
+    const entry_point_ptr: [*:0]const u8 = if (compute_ep_owned) |ep| ep else "main";
+
+    var pipeline_desc = std.mem.zeroes(raw.c.WGPUComputePipelineDescriptor);
+    pipeline_desc.layout = if (pipeline_layout) |l| @ptrCast(l) else null;
+    pipeline_desc.compute.module = @ptrCast(compute_module);
+    pipeline_desc.compute.entryPoint = raw.c.WGPUStringView{
+        .data = entry_point_ptr,
+        .length = std.mem.sliceTo(entry_point_ptr, 0).len,
+    };
+
+    const pipeline: wgpu.ComputePipeline = @ptrCast(raw.c.wgpuDeviceCreateComputePipeline(@ptrCast(gctx.device), &pipeline_desc));
+
+    const id = ht.alloc(.{ .compute_pipeline = @ptrCast(pipeline) }) catch return Value.@"null";
+    return Value.initFloat64(@floatFromInt(id.toNumber()));
 }
 
 /// __native.gpuCreateBindGroup(deviceId, descriptor) → number (handle ID)
@@ -3798,8 +3865,7 @@ fn gpuRenderPipelineGetBindGroupLayoutNative(
 
 /// __native.gpuConfigureContext(deviceId, format, alphaMode, width, height) → undefined
 ///
-/// Stub — stores surface configuration. Real Dawn surface configuration comes later.
-/// Validates the device handle, accepts format/alphaMode strings and width/height.
+/// Configures the Dawn surface with the given format, alpha mode, and size.
 fn gpuConfigureContextNative(
     ctx: ?*Context,
     _: Value,
@@ -3810,6 +3876,7 @@ fn gpuConfigureContextNative(
     const context = ctx orelse return Value.undefined;
     const bridge = getBridgeFromData(context, func_data) orelse return Value.undefined;
     const ht = bridge.handle_table_ptr;
+    const gctx = bridge.gctx orelse return Value.undefined;
 
     // argv[0] = deviceId — validate device handle exists
     if (argv.len < 1) return Value.undefined;
@@ -3818,16 +3885,35 @@ fn gpuConfigureContextNative(
     const device_id = f64ToHandle(device_f64);
     _ = ht.get(device_id) catch return Value.undefined;
 
-    // argv[1] = format (string, e.g. "bgra8unorm"), accepted but not used yet
-    // argv[2] = alphaMode (string, e.g. "opaque"), accepted but not used yet
-    // argv[3] = width (number), argv[4] = height (number)
+    // Parse format and alphaMode strings from JS
+    var format_str: []const u8 = "bgra8unorm";
+    var alpha_mode_str: []const u8 = "opaque";
+    if (argv.len >= 2) {
+        const format_val: Value = @bitCast(argv[1]);
+        if (format_val.toCString(context)) |s| {
+            defer context.freeCString(s);
+            format_str = std.mem.span(s);
+        }
+    }
+    if (argv.len >= 3) {
+        const alpha_val: Value = @bitCast(argv[2]);
+        if (alpha_val.toCString(context)) |s| {
+            defer context.freeCString(s);
+            alpha_mode_str = std.mem.span(s);
+        }
+    }
+
+    // Apply format and alpha mode to the Dawn surface
+    gctx.configureSurface(format_str, alpha_mode_str);
+
+    // Handle size change via resize
     if (argv.len >= 5) {
         const w_val: Value = @bitCast(argv[3]);
         const h_val: Value = @bitCast(argv[4]);
         const width_f = w_val.toFloat64(context) catch 0;
         const height_f = h_val.toFloat64(context) catch 0;
         if (width_f > 0 and height_f > 0) {
-            bridge.onFramebufferResize(@intFromFloat(width_f), @intFromFloat(height_f));
+            gctx.resize(@intFromFloat(width_f), @intFromFloat(height_f));
         }
     }
 
@@ -4689,6 +4775,7 @@ test "gpuCreateComputePipeline returns valid handle" {
 
     try bridge.register(engine.context);
 
+    // Without a real gctx, createComputePipeline returns null
     const js_src =
         \\(function() {
         \\  var devId = __native.gpuRequestDevice(0);
@@ -4700,12 +4787,7 @@ test "gpuCreateComputePipeline returns valid handle" {
     var result = try engine.eval(js_src, "<test>");
     defer result.deinit();
 
-    const returned_f64 = try result.toFloat64();
-    const returned_id = f64ToHandle(returned_f64);
-    try testing.expect(ht.isValid(returned_id));
-
-    const entry = try ht.get(returned_id);
-    try testing.expectEqual(handle_table.HandleType.compute_pipeline, entry.handle_type);
+    try testing.expect(result.value.isNull());
 }
 
 test "gpuCreateBindGroup returns valid handle" {
@@ -4791,9 +4873,9 @@ test "handle table allocates correct types for each pipeline creation" {
     var result = try engine.eval(js_src, "<test>");
     defer result.deinit();
 
-    // Without gctx, most creation functions return null. Only gpuCreateComputePipeline
-    // still uses allocPipelineHandle which doesn't require gctx, allocating 1 handle.
-    try testing.expectEqual(initial_count + 1, ht.activeCount());
+    // Without gctx, most creation functions return null, including
+    // gpuCreateComputePipeline which now requires a real device.
+    try testing.expectEqual(initial_count, ht.activeCount());
 }
 
 // ---------------------------------------------------------------------------
@@ -5678,6 +5760,44 @@ test "gpuComputePassEncoderEnd with real hardware" {
         \\  var passId = __native.gpuCommandEncoderBeginComputePass(encId);
         \\  var result = __native.gpuComputePassEncoderEnd(passId);
         \\  return result === undefined;
+        \\})()
+    ;
+    var result = try engine.eval(js_src, "<test>");
+    defer result.deinit();
+
+    try testing.expectEqual(@as(i32, 1), try result.toInt32());
+}
+
+test "gpuCreateComputePipeline with real hardware" {
+    var ht = try HandleTable.init(testing.allocator, 32);
+    defer ht.deinit(testing.allocator);
+
+    const context_result = try createTestGpuContext(testing.allocator);
+    const gctx = context_result[0];
+    const glfw_window = context_result[1];
+    defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, gctx);
+    defer bridge.deinit();
+
+    var engine = try JsEngine.init(testing.allocator);
+    defer engine.deinit();
+
+    try bridge.register(engine.context);
+
+    const js_src =
+        \\(function() {
+        \\  var devId = __native.gpuRequestDevice(0);
+        \\  var modId = __native.gpuCreateShaderModule(devId, {
+        \\    code: '@compute @workgroup_size(64) fn main() {}'
+        \\  });
+        \\  if (modId === null) return 'shader module creation failed';
+        \\  var pipeId = __native.gpuCreateComputePipeline(devId, {
+        \\    compute: { module: modId, entryPoint: 'main' }
+        \\  });
+        \\  if (pipeId === null) return 'pipeline creation returned null';
+        \\  if (typeof pipeId !== 'number') return 'expected number, got ' + typeof pipeId;
+        \\  return true;
         \\})()
     ;
     var result = try engine.eval(js_src, "<test>");
