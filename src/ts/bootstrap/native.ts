@@ -126,10 +126,87 @@ export interface NativeBridge {
 
   /** Configure the GPU canvas context surface. */
   gpuConfigureContext?(deviceId: number, format: string, alphaMode: string, width: number, height: number): void;
+  /** Unconfigure the GPU canvas context surface. */
+  gpuCanvasUnconfigure?(deviceId: number): void;
   /** Get the current swap chain texture, returning an opaque handle ID. */
   gpuGetCurrentTexture?(): number;
   /** Signal frame present after queue.submit. */
   gpuPresent?(): void;
+
+  // --- Additional WebGPU API coverage ---
+
+  /** Set the debug label on any GPU object handle. */
+  gpuSetLabel?(handleId: number, label: string): void;
+  /** Get adapter info (vendor, architecture, device, description, etc.). */
+  gpuGetAdapterInfo?(adapterId: number): object;
+  /** Get WGSL language features. */
+  gpuGetWgslLanguageFeatures?(): object;
+  /** Get device lost state (null if not lost). */
+  gpuGetDeviceLostState?(deviceId: number): object | null;
+  /** Begin a compute pass. */
+  gpuCommandEncoderBeginComputePass?(encoderId: number, descriptor?: object): number;
+  /** Copy buffer to texture. */
+  gpuCommandEncoderCopyBufferToTexture?(encoderId: number, source: object, destination: object, copySize: object): void;
+  /** Copy texture to buffer. */
+  gpuCommandEncoderCopyTextureToBuffer?(encoderId: number, source: object, destination: object, copySize: object): void;
+  /** Copy texture to texture. */
+  gpuCommandEncoderCopyTextureToTexture?(encoderId: number, source: object, destination: object, copySize: object): void;
+  /** Clear a buffer region. */
+  gpuCommandEncoderClearBuffer?(encoderId: number, bufferId: number, offset: number, size: number): void;
+  /** Draw indirect on render pass. */
+  gpuRenderPassDrawIndirect?(passId: number, indirectBufferId: number, indirectOffset: number): void;
+  /** Draw indexed indirect on render pass. */
+  gpuRenderPassDrawIndexedIndirect?(passId: number, indirectBufferId: number, indirectOffset: number): void;
+  /** Set blend constant on render pass. */
+  gpuRenderPassSetBlendConstant?(passId: number, color: object): void;
+  /** Set stencil reference on render pass. */
+  gpuRenderPassSetStencilReference?(passId: number, reference: number): void;
+  /** Execute render bundles on render pass. */
+  gpuRenderPassExecuteBundles?(passId: number, bundleIds: number[]): void;
+  /** Set pipeline on compute pass. */
+  gpuComputePassEncoderSetPipeline?(passId: number, pipelineId: number): void;
+  /** Set bind group on compute pass. */
+  gpuComputePassEncoderSetBindGroup?(passId: number, index: number, bindGroupId: number, offsets?: number[]): void;
+  /** Dispatch workgroups on compute pass. */
+  gpuComputePassEncoderDispatchWorkgroups?(passId: number, x: number, y?: number, z?: number): void;
+  /** Dispatch workgroups indirect on compute pass. */
+  gpuComputePassEncoderDispatchWorkgroupsIndirect?(passId: number, indirectBufferId: number, indirectOffset: number): void;
+  /** End a compute pass. */
+  gpuComputePassEncoderEnd?(passId: number): void;
+  /** Create a render bundle encoder. */
+  gpuCreateRenderBundleEncoder?(deviceId: number, descriptor: object): number;
+  /** Finish a render bundle encoder, returning bundle handle. */
+  gpuRenderBundleEncoderFinish?(encoderId: number): number;
+  /** Create a query set. */
+  gpuCreateQuerySet?(deviceId: number, descriptor: object): number;
+  /** Destroy a query set. */
+  gpuQuerySetDestroy?(querySetId: number): void;
+  /** Destroy a GPU device. */
+  gpuDeviceDestroy?(deviceId: number): void;
+  /** Push an error scope on a device. */
+  gpuDevicePushErrorScope?(deviceId: number, filter: string): void;
+  /** Pop an error scope on a device. */
+  gpuDevicePopErrorScope?(deviceId: number): void;
+  /** Map a buffer asynchronously. */
+  gpuBufferMapAsync?(bufferId: number, mode: number, offset: number, size: number): void;
+  /** Get buffer size. */
+  gpuBufferGetSize?(bufferId: number): number;
+  /** Get buffer usage flags. */
+  gpuBufferGetUsage?(bufferId: number): number;
+  /** Get texture width. */
+  gpuTextureGetWidth?(textureId: number): number;
+  /** Get texture height. */
+  gpuTextureGetHeight?(textureId: number): number;
+  /** Get texture format enum value. */
+  gpuTextureGetFormat?(textureId: number): number;
+  /** Get shader module compilation info. */
+  gpuShaderModuleGetCompilationInfo?(shaderModuleId: number): object;
+  /** Create a render pipeline asynchronously (returns Promise<number>). */
+  gpuCreateRenderPipelineAsync?(deviceId: number, descriptor: object): Promise<number>;
+  /** Create a compute pipeline asynchronously (returns Promise<number>). */
+  gpuCreateComputePipelineAsync?(deviceId: number, descriptor: object): Promise<number>;
+  /** Signal on-submitted-work-done on a queue. */
+  gpuQueueOnSubmittedWorkDone?(queueId: number): void;
 
   // --- Audio functions ---
 

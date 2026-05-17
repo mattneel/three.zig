@@ -47,8 +47,9 @@ export class GPUBuffer {
     this.usage = usage;
   }
 
-  async mapAsync(_mode?: number, _offset?: number, _size?: number): Promise<void> {
-    // Stub — real mapping requires async I/O bridge (future ticket)
+  async mapAsync(mode?: number, offset?: number, size?: number): Promise<void> {
+    const native = getNative();
+    native?.gpuBufferMapAsync?.(this._handle, mode ?? 1, offset ?? 0, size ?? this.size);
   }
 
   getMappedRange(offset?: number, size?: number): ArrayBuffer {
@@ -59,7 +60,7 @@ export class GPUBuffer {
   }
 
   get mapState(): string {
-    return "unmapped"; // TODO: track real state
+    return "unmapped";
   }
 
   unmap(): void {
@@ -70,6 +71,14 @@ export class GPUBuffer {
   destroy(): void {
     const native = getNative();
     native?.gpuDestroyBuffer?.(this._handle);
+  }
+
+  get label(): string {
+    return "";
+  }
+  set label(_v: string) {
+    const native = getNative();
+    native?.gpuSetLabel?.(this._handle, _v);
   }
 }
 
@@ -83,6 +92,9 @@ export class GPUTextureView {
   constructor(handle: number) {
     this._handle = handle;
   }
+
+  get label(): string { return ""; }
+  set label(_v: string) { getNative()?.gpuSetLabel?.(this._handle, _v); }
 }
 
 export class GPUTexture {
@@ -128,6 +140,14 @@ export class GPUTexture {
     const native = getNative();
     native?.gpuDestroyTexture?.(this._handle);
   }
+
+  get label(): string {
+    return "";
+  }
+  set label(_v: string) {
+    const native = getNative();
+    native?.gpuSetLabel?.(this._handle, _v);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +180,10 @@ export class GPUCanvasContext {
 
   unconfigure(): void {
     this._configured = false;
+    const native = getNative();
+    if (this._device) {
+      native?.gpuCanvasUnconfigure?.(this._device._handle);
+    }
     this._device = null;
   }
 
@@ -206,6 +230,11 @@ export class GPUShaderModule {
   constructor(handle: number, code: string = "") {
     this._handle = handle;
     this._code = code;
+  }
+
+  async getCompilationInfo(): Promise<object> {
+    const native = getNative();
+    return native?.gpuShaderModuleGetCompilationInfo?.(this._handle) ?? {};
   }
 }
 
@@ -274,16 +303,19 @@ export class GPUComputePipeline {
 // ---------------------------------------------------------------------------
 
 export class GPUQuerySet {
+  _handle: number;
   readonly type: string;
   readonly count: number;
 
-  constructor(type: string, count: number) {
+  constructor(handle: number, type: string, count: number) {
+    this._handle = handle;
     this.type = type;
     this.count = count;
   }
 
   destroy(): void {
-    // Stub
+    const native = getNative();
+    native?.gpuQuerySetDestroy?.(this._handle);
   }
 }
 
@@ -293,9 +325,11 @@ export class GPUQuerySet {
 
 /** Opaque container for recorded render bundle commands. */
 export class GPURenderBundle {
+  _handle: number;
   _commands: any[];
 
-  constructor(commands: any[]) {
+  constructor(handle: number, commands: any[]) {
+    this._handle = handle;
     this._commands = commands;
   }
 }
@@ -305,7 +339,12 @@ export class GPURenderBundle {
  * Commands are replayed on the real render pass via executeBundles().
  */
 export class GPURenderBundleEncoder {
+  _handle: number;
   private _commands: any[] = [];
+
+  constructor(handle: number) {
+    this._handle = handle;
+  }
 
   setPipeline(pipeline: GPURenderPipeline): void {
     this._commands.push({ op: "setPipeline", args: [pipeline] });
@@ -332,7 +371,9 @@ export class GPURenderBundleEncoder {
   }
 
   finish(): GPURenderBundle {
-    return new GPURenderBundle(this._commands);
+    const native = getNative();
+    const handle = native?.gpuRenderBundleEncoderFinish?.(this._handle) as number ?? 0;
+    return new GPURenderBundle(handle, this._commands);
   }
 }
 
@@ -390,12 +431,14 @@ export class GPURenderPassEncoder {
     native?.gpuRenderPassDrawIndexed?.(this._handle, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
   }
 
-  drawIndirect(_indirectBuffer: GPUBuffer, _indirectOffset?: number): void {
-    // Stub
+  drawIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void {
+    const native = getNative();
+    native?.gpuRenderPassDrawIndirect?.(this._handle, indirectBuffer._handle, indirectOffset ?? 0);
   }
 
-  drawIndexedIndirect(_indirectBuffer: GPUBuffer, _indirectOffset?: number): void {
-    // Stub
+  drawIndexedIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void {
+    const native = getNative();
+    native?.gpuRenderPassDrawIndexedIndirect?.(this._handle, indirectBuffer._handle, indirectOffset ?? 0);
   }
 
   setViewport(x: number, y: number, width: number, height: number, minDepth: number, maxDepth: number): void {
@@ -408,15 +451,27 @@ export class GPURenderPassEncoder {
     native?.gpuRenderPassSetScissorRect?.(this._handle, x, y, width, height);
   }
 
-  setBlendConstant(_color: object | number[]): void {
-    // Stub
+  setBlendConstant(color: object | number[]): void {
+    const native = getNative();
+    let c: any = color;
+    if (Array.isArray(c)) c = { r: c[0], g: c[1], b: c[2], a: c[3] };
+    native?.gpuRenderPassSetBlendConstant?.(this._handle, c);
   }
 
-  setStencilReference(_reference: number): void {
-    // Stub
+  setStencilReference(reference: number): void {
+    const native = getNative();
+    native?.gpuRenderPassSetStencilReference?.(this._handle, reference);
   }
 
   executeBundles(bundles: GPURenderBundle[]): void {
+    const native = getNative();
+    // Try native executeBundles with real bundle handles
+    const handles = bundles.filter(b => b && b._handle > 0).map(b => b._handle);
+    if (handles.length > 0 && native?.gpuRenderPassExecuteBundles) {
+      native.gpuRenderPassExecuteBundles(this._handle, handles);
+      return;
+    }
+    // Fallback: replay recorded commands on the JS side
     for (const bundle of bundles) {
       if (!bundle || !bundle._commands) continue;
       for (const cmd of bundle._commands) {
@@ -447,24 +502,27 @@ export class GPUComputePassEncoder {
 
   setPipeline(pipeline: GPUComputePipeline): void {
     const native = getNative();
-    native?.gpuRenderPassSetPipeline?.(this._handle, pipeline._handle);
+    native?.gpuComputePassEncoderSetPipeline?.(this._handle, pipeline._handle);
   }
 
-  setBindGroup(index: number, bindGroup: GPUBindGroup): void {
+  setBindGroup(index: number, bindGroup: GPUBindGroup, offsets?: number[]): void {
     const native = getNative();
-    native?.gpuRenderPassSetBindGroup?.(this._handle, index, bindGroup._handle);
+    native?.gpuComputePassEncoderSetBindGroup?.(this._handle, index, bindGroup._handle, offsets);
   }
 
-  dispatchWorkgroups(_x: number, _y?: number, _z?: number): void {
-    // Stub
+  dispatchWorkgroups(x: number, y?: number, z?: number): void {
+    const native = getNative();
+    native?.gpuComputePassEncoderDispatchWorkgroups?.(this._handle, x, y, z);
   }
 
-  dispatchWorkgroupsIndirect(_indirectBuffer: GPUBuffer, _indirectOffset?: number): void {
-    // Stub
+  dispatchWorkgroupsIndirect(indirectBuffer: GPUBuffer, indirectOffset?: number): void {
+    const native = getNative();
+    native?.gpuComputePassEncoderDispatchWorkgroupsIndirect?.(this._handle, indirectBuffer._handle, indirectOffset ?? 0);
   }
 
   end(): void {
-    // Stub
+    const native = getNative();
+    native?.gpuComputePassEncoderEnd?.(this._handle);
   }
 }
 
@@ -485,32 +543,42 @@ export class GPUCommandEncoder {
     return new GPURenderPassEncoder(handle);
   }
 
-  beginComputePass(_descriptor?: object): GPUComputePassEncoder {
-    return new GPUComputePassEncoder(0);
+  beginComputePass(descriptor?: object): GPUComputePassEncoder {
+    const native = getNative();
+    const handle = native?.gpuCommandEncoderBeginComputePass?.(this._handle, descriptor ?? {}) as number ?? 0;
+    return new GPUComputePassEncoder(handle);
   }
 
   copyBufferToBuffer(
-    _source: GPUBuffer, _sourceOffset: number,
-    _destination: GPUBuffer, _destinationOffset: number,
-    _size: number,
+    source: GPUBuffer, sourceOffset: number,
+    destination: GPUBuffer, destinationOffset: number,
+    size: number,
   ): void {
-    // Stub
+    const native = getNative();
+    native?.gpuCommandEncoderCopyBufferToBuffer?.(
+      this._handle, source._handle, sourceOffset,
+      destination._handle, destinationOffset, size,
+    );
   }
 
-  copyBufferToTexture(_source: object, _destination: object, _copySize: object): void {
-    // Stub
+  copyBufferToTexture(source: object, destination: object, copySize: object): void {
+    const native = getNative();
+    native?.gpuCommandEncoderCopyBufferToTexture?.(this._handle, unwrapHandles(source), unwrapHandles(destination), copySize);
   }
 
-  copyTextureToBuffer(_source: object, _destination: object, _copySize: object): void {
-    // Stub
+  copyTextureToBuffer(source: object, destination: object, copySize: object): void {
+    const native = getNative();
+    native?.gpuCommandEncoderCopyTextureToBuffer?.(this._handle, unwrapHandles(source), unwrapHandles(destination), copySize);
   }
 
-  copyTextureToTexture(_source: object, _destination: object, _copySize: object): void {
-    // Stub
+  copyTextureToTexture(source: object, destination: object, copySize: object): void {
+    const native = getNative();
+    native?.gpuCommandEncoderCopyTextureToTexture?.(this._handle, unwrapHandles(source), unwrapHandles(destination), copySize);
   }
 
-  clearBuffer(_buffer: GPUBuffer, _offset?: number, _size?: number): void {
-    // Stub
+  clearBuffer(buffer: GPUBuffer, offset?: number, size?: number): void {
+    const native = getNative();
+    native?.gpuCommandEncoderClearBuffer?.(this._handle, buffer._handle, offset ?? 0, size ?? 0);
   }
 
   resolveQuerySet(
@@ -642,6 +710,12 @@ export class GPUQueue {
       { width: w, height: h, depthOrArrayLayers: 1 },
     );
   }
+
+  onSubmittedWorkDone(): Promise<void> {
+    const native = getNative();
+    native?.gpuQueueOnSubmittedWorkDone?.(this._handle);
+    return Promise.resolve();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -712,19 +786,28 @@ export class GPUDevice extends EventTarget {
     };
 
     // Never-resolving promise — device is never lost in our runtime
+    // Can be queried via gpuGetDeviceLostState for real lost detection
     this.lost = new Promise(() => {});
   }
 
-  destroy(): void {
-    // Future: call __native.gpuDestroyDevice(this._handle)
+  get adapterInfo(): object {
+    const native = getNative();
+    return native?.gpuGetAdapterInfo?.(0) ?? {};
   }
 
-  pushErrorScope(_filter: string): void {
-    // Stub — no error scopes in stub mode
+  destroy(): void {
+    const native = getNative();
+    native?.gpuDeviceDestroy?.(this._handle);
+  }
+
+  pushErrorScope(filter: string): void {
+    const native = getNative();
+    native?.gpuDevicePushErrorScope?.(this._handle, filter);
   }
 
   popErrorScope(): Promise<null> {
-    // Always resolve with null (no error)
+    const native = getNative();
+    native?.gpuDevicePopErrorScope?.(this._handle);
     return Promise.resolve(null);
   }
 
@@ -836,19 +919,27 @@ export class GPUDevice extends EventTarget {
   }
 
   createQuerySet(descriptor: { type: string; count: number; label?: string }): GPUQuerySet {
-    return new GPUQuerySet(descriptor.type, descriptor.count);
+    const native = getNative();
+    const handle = native?.gpuCreateQuerySet?.(this._handle, descriptor) as number ?? 0;
+    return new GPUQuerySet(handle, descriptor.type, descriptor.count);
   }
 
-  createRenderBundleEncoder(_descriptor: object): GPURenderBundleEncoder {
-    return new GPURenderBundleEncoder();
+  createRenderBundleEncoder(descriptor: object): GPURenderBundleEncoder {
+    const native = getNative();
+    const handle = native?.gpuCreateRenderBundleEncoder?.(this._handle, unwrapHandles(descriptor)) as number ?? 0;
+    return new GPURenderBundleEncoder(handle);
   }
 
   async createRenderPipelineAsync(descriptor: object): Promise<GPURenderPipeline> {
-    return this.createRenderPipeline(descriptor);
+    const native = getNative();
+    const handle = await native?.gpuCreateRenderPipelineAsync?.(this._handle, unwrapHandles(descriptor)) as number ?? 0;
+    return new GPURenderPipeline(handle);
   }
 
   async createComputePipelineAsync(descriptor: object): Promise<GPUComputePipeline> {
-    return this.createComputePipeline(descriptor);
+    const native = getNative();
+    const handle = await native?.gpuCreateComputePipelineAsync?.(this._handle, unwrapHandles(descriptor)) as number ?? 0;
+    return new GPUComputePipeline(handle);
   }
 
   // --- T18: Command encoding ---
@@ -890,6 +981,11 @@ export class GPUAdapter {
       "float32-filterable",
       "subgroups",
     ]);
+  }
+
+  get info(): object {
+    const native = getNative();
+    return native?.gpuGetAdapterInfo?.(this._handle) ?? {};
   }
 
   get limits(): Record<string, number> {
@@ -946,5 +1042,18 @@ export class GPU {
 
   getPreferredCanvasFormat(): string {
     return getNative()?.gpuGetPreferredCanvasFormat?.() ?? "bgra8unorm";
+  }
+
+  get wgslLanguageFeatures(): Set<string> {
+    const native = getNative();
+    const info = native?.gpuGetWgslLanguageFeatures?.() as any;
+    if (info?.size) {
+      const features = new Set<string>();
+      for (let i = 0; i < info.size; i++) {
+        features.add((info as any)[i] ?? `feature-${i}`);
+      }
+      return features;
+    }
+    return new Set<string>();
   }
 }

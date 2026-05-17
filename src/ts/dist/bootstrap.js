@@ -194,7 +194,9 @@
       this.size = size;
       this.usage = usage;
     }
-    async mapAsync(_mode, _offset, _size) {
+    async mapAsync(mode, offset, size) {
+      const native = getNative();
+      native?.gpuBufferMapAsync?.(this._handle, mode ?? 1, offset ?? 0, size ?? this.size);
     }
     getMappedRange(offset, size) {
       const native = getNative();
@@ -213,11 +215,24 @@
       const native = getNative();
       native?.gpuDestroyBuffer?.(this._handle);
     }
+    get label() {
+      return "";
+    }
+    set label(_v) {
+      const native = getNative();
+      native?.gpuSetLabel?.(this._handle, _v);
+    }
   };
   var GPUTextureView = class {
     _handle;
     constructor(handle) {
       this._handle = handle;
+    }
+    get label() {
+      return "";
+    }
+    set label(_v) {
+      getNative()?.gpuSetLabel?.(this._handle, _v);
     }
   };
   var GPUTexture = class {
@@ -255,6 +270,13 @@
       const native = getNative();
       native?.gpuDestroyTexture?.(this._handle);
     }
+    get label() {
+      return "";
+    }
+    set label(_v) {
+      const native = getNative();
+      native?.gpuSetLabel?.(this._handle, _v);
+    }
   };
   var GPUCanvasContext = class {
     _configured = false;
@@ -280,6 +302,10 @@
     }
     unconfigure() {
       this._configured = false;
+      const native = getNative();
+      if (this._device) {
+        native?.gpuCanvasUnconfigure?.(this._device._handle);
+      }
       this._device = null;
     }
     getCurrentTexture() {
@@ -312,6 +338,10 @@
     constructor(handle, code = "") {
       this._handle = handle;
       this._code = code;
+    }
+    async getCompilationInfo() {
+      const native = getNative();
+      return native?.gpuShaderModuleGetCompilationInfo?.(this._handle) ?? {};
     }
   };
   var GPUBindGroupLayout = class {
@@ -355,23 +385,33 @@
     }
   };
   var GPUQuerySet = class {
+    _handle;
     type;
     count;
-    constructor(type, count) {
+    constructor(handle, type, count) {
+      this._handle = handle;
       this.type = type;
       this.count = count;
     }
     destroy() {
+      const native = getNative();
+      native?.gpuQuerySetDestroy?.(this._handle);
     }
   };
   var GPURenderBundle = class {
+    _handle;
     _commands;
-    constructor(commands) {
+    constructor(handle, commands) {
+      this._handle = handle;
       this._commands = commands;
     }
   };
   var GPURenderBundleEncoder = class {
+    _handle;
     _commands = [];
+    constructor(handle) {
+      this._handle = handle;
+    }
     setPipeline(pipeline) {
       this._commands.push({ op: "setPipeline", args: [pipeline] });
     }
@@ -391,7 +431,9 @@
       this._commands.push({ op: "drawIndexed", args: [indexCount, instanceCount, firstIndex, baseVertex, firstInstance] });
     }
     finish() {
-      return new GPURenderBundle(this._commands);
+      const native = getNative();
+      const handle = native?.gpuRenderBundleEncoderFinish?.(this._handle) ?? 0;
+      return new GPURenderBundle(handle, this._commands);
     }
   };
   var GPUCommandBuffer = class {
@@ -430,9 +472,13 @@
       const native = getNative();
       native?.gpuRenderPassDrawIndexed?.(this._handle, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
     }
-    drawIndirect(_indirectBuffer, _indirectOffset) {
+    drawIndirect(indirectBuffer, indirectOffset) {
+      const native = getNative();
+      native?.gpuRenderPassDrawIndirect?.(this._handle, indirectBuffer._handle, indirectOffset ?? 0);
     }
-    drawIndexedIndirect(_indirectBuffer, _indirectOffset) {
+    drawIndexedIndirect(indirectBuffer, indirectOffset) {
+      const native = getNative();
+      native?.gpuRenderPassDrawIndexedIndirect?.(this._handle, indirectBuffer._handle, indirectOffset ?? 0);
     }
     setViewport(x, y, width, height, minDepth, maxDepth) {
       const native = getNative();
@@ -442,11 +488,23 @@
       const native = getNative();
       native?.gpuRenderPassSetScissorRect?.(this._handle, x, y, width, height);
     }
-    setBlendConstant(_color) {
+    setBlendConstant(color) {
+      const native = getNative();
+      let c = color;
+      if (Array.isArray(c)) c = { r: c[0], g: c[1], b: c[2], a: c[3] };
+      native?.gpuRenderPassSetBlendConstant?.(this._handle, c);
     }
-    setStencilReference(_reference) {
+    setStencilReference(reference) {
+      const native = getNative();
+      native?.gpuRenderPassSetStencilReference?.(this._handle, reference);
     }
     executeBundles(bundles) {
+      const native = getNative();
+      const handles = bundles.filter((b) => b && b._handle > 0).map((b) => b._handle);
+      if (handles.length > 0 && native?.gpuRenderPassExecuteBundles) {
+        native.gpuRenderPassExecuteBundles(this._handle, handles);
+        return;
+      }
       for (const bundle of bundles) {
         if (!bundle || !bundle._commands) continue;
         for (const cmd of bundle._commands) {
@@ -469,17 +527,23 @@
     }
     setPipeline(pipeline) {
       const native = getNative();
-      native?.gpuRenderPassSetPipeline?.(this._handle, pipeline._handle);
+      native?.gpuComputePassEncoderSetPipeline?.(this._handle, pipeline._handle);
     }
-    setBindGroup(index, bindGroup) {
+    setBindGroup(index, bindGroup, offsets) {
       const native = getNative();
-      native?.gpuRenderPassSetBindGroup?.(this._handle, index, bindGroup._handle);
+      native?.gpuComputePassEncoderSetBindGroup?.(this._handle, index, bindGroup._handle, offsets);
     }
-    dispatchWorkgroups(_x, _y, _z) {
+    dispatchWorkgroups(x, y, z) {
+      const native = getNative();
+      native?.gpuComputePassEncoderDispatchWorkgroups?.(this._handle, x, y, z);
     }
-    dispatchWorkgroupsIndirect(_indirectBuffer, _indirectOffset) {
+    dispatchWorkgroupsIndirect(indirectBuffer, indirectOffset) {
+      const native = getNative();
+      native?.gpuComputePassEncoderDispatchWorkgroupsIndirect?.(this._handle, indirectBuffer._handle, indirectOffset ?? 0);
     }
     end() {
+      const native = getNative();
+      native?.gpuComputePassEncoderEnd?.(this._handle);
     }
   };
   var GPUCommandEncoder = class {
@@ -492,18 +556,37 @@
       const handle = native?.gpuCommandEncoderBeginRenderPass?.(this._handle, unwrapHandles(descriptor)) ?? 0;
       return new GPURenderPassEncoder(handle);
     }
-    beginComputePass(_descriptor) {
-      return new GPUComputePassEncoder(0);
+    beginComputePass(descriptor) {
+      const native = getNative();
+      const handle = native?.gpuCommandEncoderBeginComputePass?.(this._handle, descriptor ?? {}) ?? 0;
+      return new GPUComputePassEncoder(handle);
     }
-    copyBufferToBuffer(_source, _sourceOffset, _destination, _destinationOffset, _size) {
+    copyBufferToBuffer(source, sourceOffset, destination, destinationOffset, size) {
+      const native = getNative();
+      native?.gpuCommandEncoderCopyBufferToBuffer?.(
+        this._handle,
+        source._handle,
+        sourceOffset,
+        destination._handle,
+        destinationOffset,
+        size
+      );
     }
-    copyBufferToTexture(_source, _destination, _copySize) {
+    copyBufferToTexture(source, destination, copySize) {
+      const native = getNative();
+      native?.gpuCommandEncoderCopyBufferToTexture?.(this._handle, unwrapHandles(source), unwrapHandles(destination), copySize);
     }
-    copyTextureToBuffer(_source, _destination, _copySize) {
+    copyTextureToBuffer(source, destination, copySize) {
+      const native = getNative();
+      native?.gpuCommandEncoderCopyTextureToBuffer?.(this._handle, unwrapHandles(source), unwrapHandles(destination), copySize);
     }
-    copyTextureToTexture(_source, _destination, _copySize) {
+    copyTextureToTexture(source, destination, copySize) {
+      const native = getNative();
+      native?.gpuCommandEncoderCopyTextureToTexture?.(this._handle, unwrapHandles(source), unwrapHandles(destination), copySize);
     }
-    clearBuffer(_buffer, _offset, _size) {
+    clearBuffer(buffer, offset, size) {
+      const native = getNative();
+      native?.gpuCommandEncoderClearBuffer?.(this._handle, buffer._handle, offset ?? 0, size ?? 0);
     }
     resolveQuerySet(_querySet, _firstQuery, _queryCount, _destination, _destinationOffset) {
     }
@@ -592,6 +675,11 @@
         { width: w, height: h, depthOrArrayLayers: 1 }
       );
     }
+    onSubmittedWorkDone() {
+      const native = getNative();
+      native?.gpuQueueOnSubmittedWorkDone?.(this._handle);
+      return Promise.resolve();
+    }
   };
   var GPUDevice = class extends EventTarget {
     _handle;
@@ -653,11 +741,21 @@
       this.lost = new Promise(() => {
       });
     }
-    destroy() {
+    get adapterInfo() {
+      const native = getNative();
+      return native?.gpuGetAdapterInfo?.(0) ?? {};
     }
-    pushErrorScope(_filter) {
+    destroy() {
+      const native = getNative();
+      native?.gpuDeviceDestroy?.(this._handle);
+    }
+    pushErrorScope(filter) {
+      const native = getNative();
+      native?.gpuDevicePushErrorScope?.(this._handle, filter);
     }
     popErrorScope() {
+      const native = getNative();
+      native?.gpuDevicePopErrorScope?.(this._handle);
       return Promise.resolve(null);
     }
     // --- T16: Resource creation ---
@@ -755,16 +853,24 @@
       return new GPUBindGroup(handle);
     }
     createQuerySet(descriptor) {
-      return new GPUQuerySet(descriptor.type, descriptor.count);
+      const native = getNative();
+      const handle = native?.gpuCreateQuerySet?.(this._handle, descriptor) ?? 0;
+      return new GPUQuerySet(handle, descriptor.type, descriptor.count);
     }
-    createRenderBundleEncoder(_descriptor) {
-      return new GPURenderBundleEncoder();
+    createRenderBundleEncoder(descriptor) {
+      const native = getNative();
+      const handle = native?.gpuCreateRenderBundleEncoder?.(this._handle, unwrapHandles(descriptor)) ?? 0;
+      return new GPURenderBundleEncoder(handle);
     }
     async createRenderPipelineAsync(descriptor) {
-      return this.createRenderPipeline(descriptor);
+      const native = getNative();
+      const handle = await native?.gpuCreateRenderPipelineAsync?.(this._handle, unwrapHandles(descriptor)) ?? 0;
+      return new GPURenderPipeline(handle);
     }
     async createComputePipelineAsync(descriptor) {
-      return this.createComputePipeline(descriptor);
+      const native = getNative();
+      const handle = await native?.gpuCreateComputePipelineAsync?.(this._handle, unwrapHandles(descriptor)) ?? 0;
+      return new GPUComputePipeline(handle);
     }
     // --- T18: Command encoding ---
     createCommandEncoder(_descriptor) {
@@ -796,6 +902,10 @@
         "float32-filterable",
         "subgroups"
       ]);
+    }
+    get info() {
+      const native = getNative();
+      return native?.gpuGetAdapterInfo?.(this._handle) ?? {};
     }
     get limits() {
       return {
@@ -845,6 +955,18 @@
     }
     getPreferredCanvasFormat() {
       return getNative()?.gpuGetPreferredCanvasFormat?.() ?? "bgra8unorm";
+    }
+    get wgslLanguageFeatures() {
+      const native = getNative();
+      const info = native?.gpuGetWgslLanguageFeatures?.();
+      if (info?.size) {
+        const features = /* @__PURE__ */ new Set();
+        for (let i = 0; i < info.size; i++) {
+          features.add(info[i] ?? `feature-${i}`);
+        }
+        return features;
+      }
+      return /* @__PURE__ */ new Set();
     }
   };
 
