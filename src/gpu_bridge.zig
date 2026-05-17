@@ -93,6 +93,12 @@ pub fn destroyTestGpuContext(gctx: *dawn.GraphicsContext, glfw_window: *anyopaqu
     // Don't terminate - GLFW stays initialized for other tests
 }
 
+const PendingAsyncPipeline = struct {
+    ctx: *Context,
+    promise: Value.Promise,
+    handle_table: *HandleTable,
+};
+
 /// The GPU bridge connects JavaScript WebGPU API calls to the pre-created
 /// Dawn adapter, device, and queue (source-built Dawn, not zgpu's prebuilt binaries).
 ///
@@ -111,6 +117,9 @@ pub const GpuBridge = struct {
     /// lifetime.
     prev_swapchain_view: ?HandleId = null,
     fps_overlay: FpsOverlay = .{},
+    device_lost_reason: ?wgpu.DeviceLostReason = null,
+    pending_async_pipeline: ?PendingAsyncPipeline = null,
+    pending_async_mutex: std.Thread.Mutex = .{},
 
     /// Initialize the bridge by allocating handle table entries for the
     /// pre-existing adapter, device, and queue from the native GraphicsContext.
@@ -247,6 +256,16 @@ pub const GpuBridge = struct {
         );
         native_obj.setPropertyStr(ctx, "gpuRequestAdapter", req_adapter_fn) catch return error.JSError;
 
+        // gpuGetWgslLanguageFeatures() → { size: N }
+        const wgsl_features_fn = Value.initCFunctionData(
+            ctx,
+            &gpuGetWgslLanguageFeaturesNative,
+            0,
+            0,
+            &.{},
+        );
+        native_obj.setPropertyStr(ctx, "gpuGetWgslLanguageFeatures", wgsl_features_fn) catch return error.JSError;
+
         // gpuRequestDevice(adapterId) — closure data[0] = device handle
         const req_device_fn = Value.initCFunctionData(
             ctx,
@@ -281,6 +300,16 @@ pub const GpuBridge = struct {
             &.{ht_ptr_num},
         );
         native_obj.setPropertyStr(ctx, "gpuDeviceDestroy", device_destroy_fn) catch return error.JSError;
+
+        // gpuGetDeviceLostState(deviceId) → { reason, message } | null
+        const device_lost_fn = Value.initCFunctionData(
+            ctx,
+            &gpuGetDeviceLostStateNative,
+            1,
+            0,
+            &.{ht_ptr_num},
+        );
+        native_obj.setPropertyStr(ctx, "gpuGetDeviceLostState", device_lost_fn) catch return error.JSError;
 
         // gpuGetAdapterInfo(adapterId) → { vendor, architecture, device, description, ... }
         const adapter_info_fn = Value.initCFunctionData(
@@ -392,6 +421,14 @@ pub const GpuBridge = struct {
         );
         native_obj.setPropertyStr(ctx, "gpuDestroyBuffer", destroy_buffer_fn) catch return error.JSError;
 
+        // gpuBufferGetSize(bufferId) → number
+        const buf_size_fn = Value.initCFunctionData(ctx, &gpuBufferGetSizeNative, 1, 0, &.{ht_ptr_num});
+        native_obj.setPropertyStr(ctx, "gpuBufferGetSize", buf_size_fn) catch return error.JSError;
+
+        // gpuBufferGetUsage(bufferId) → number
+        const buf_usage_fn = Value.initCFunctionData(ctx, &gpuBufferGetUsageNative, 1, 0, &.{ht_ptr_num});
+        native_obj.setPropertyStr(ctx, "gpuBufferGetUsage", buf_usage_fn) catch return error.JSError;
+
         // gpuDestroyTexture(textureId) → undefined
         const destroy_texture_fn = Value.initCFunctionData(
             ctx,
@@ -401,6 +438,18 @@ pub const GpuBridge = struct {
             &.{ht_ptr_num},
         );
         native_obj.setPropertyStr(ctx, "gpuDestroyTexture", destroy_texture_fn) catch return error.JSError;
+
+        // gpuTextureGetWidth(textureId) → number
+        const tex_width_fn = Value.initCFunctionData(ctx, &gpuTextureGetWidthNative, 1, 0, &.{ht_ptr_num});
+        native_obj.setPropertyStr(ctx, "gpuTextureGetWidth", tex_width_fn) catch return error.JSError;
+
+        // gpuTextureGetHeight(textureId) → number
+        const tex_height_fn = Value.initCFunctionData(ctx, &gpuTextureGetHeightNative, 1, 0, &.{ht_ptr_num});
+        native_obj.setPropertyStr(ctx, "gpuTextureGetHeight", tex_height_fn) catch return error.JSError;
+
+        // gpuTextureGetFormat(textureId) → number
+        const tex_fmt_fn = Value.initCFunctionData(ctx, &gpuTextureGetFormatNative, 1, 0, &.{ht_ptr_num});
+        native_obj.setPropertyStr(ctx, "gpuTextureGetFormat", tex_fmt_fn) catch return error.JSError;
 
         // --- Pipeline creation functions ---
 
@@ -413,6 +462,16 @@ pub const GpuBridge = struct {
             &.{ht_ptr_num},
         );
         native_obj.setPropertyStr(ctx, "gpuCreateShaderModule", create_shader_fn) catch return error.JSError;
+
+        // gpuShaderModuleGetCompilationInfo(shaderModuleId) → object
+        const shader_comp_info_fn = Value.initCFunctionData(
+            ctx,
+            &gpuShaderModuleGetCompilationInfoNative,
+            1,
+            0,
+            &.{ht_ptr_num},
+        );
+        native_obj.setPropertyStr(ctx, "gpuShaderModuleGetCompilationInfo", shader_comp_info_fn) catch return error.JSError;
 
         // gpuCreateBindGroupLayout(deviceId, descriptor) → handle ID
         const create_bgl_fn = Value.initCFunctionData(
@@ -444,6 +503,16 @@ pub const GpuBridge = struct {
         );
         native_obj.setPropertyStr(ctx, "gpuCreateRenderPipeline", create_rp_fn) catch return error.JSError;
 
+        // gpuCreateRenderPipelineAsync(deviceId, descriptor) → handle ID (sync wrapper)
+        const create_rp_async_fn = Value.initCFunctionData(
+            ctx,
+            &gpuCreateRenderPipelineAsyncNative,
+            2,
+            0,
+            &.{ht_ptr_num},
+        );
+        native_obj.setPropertyStr(ctx, "gpuCreateRenderPipelineAsync", create_rp_async_fn) catch return error.JSError;
+
         // gpuCreateComputePipeline(deviceId, descriptor) → handle ID
         const create_cp_fn = Value.initCFunctionData(
             ctx,
@@ -453,6 +522,16 @@ pub const GpuBridge = struct {
             &.{ht_ptr_num},
         );
         native_obj.setPropertyStr(ctx, "gpuCreateComputePipeline", create_cp_fn) catch return error.JSError;
+
+        // gpuCreateComputePipelineAsync(deviceId, descriptor) → handle ID (sync wrapper)
+        const create_cp_async_fn = Value.initCFunctionData(
+            ctx,
+            &gpuCreateComputePipelineAsyncNative,
+            2,
+            0,
+            &.{ht_ptr_num},
+        );
+        native_obj.setPropertyStr(ctx, "gpuCreateComputePipelineAsync", create_cp_async_fn) catch return error.JSError;
 
         // gpuCreateBindGroup(deviceId, descriptor) → handle ID
         const create_bg_fn = Value.initCFunctionData(
@@ -988,6 +1067,16 @@ pub const GpuBridge = struct {
             &.{ht_ptr_num},
         );
         native_obj.setPropertyStr(ctx, "gpuConfigureContext", configure_ctx_fn) catch return error.JSError;
+
+        // gpuCanvasUnconfigure(deviceId) → undefined
+        const unconfigure_fn = Value.initCFunctionData(
+            ctx,
+            &gpuCanvasUnconfigureNative,
+            1,
+            0,
+            &.{ht_ptr_num},
+        );
+        native_obj.setPropertyStr(ctx, "gpuCanvasUnconfigure", unconfigure_fn) catch return error.JSError;
 
         // gpuGetPreferredCanvasFormat() → string
         const preferred_canvas_format_fn = Value.initCFunctionData(
@@ -4493,6 +4582,451 @@ fn stringViewToJsValue(context: *Context, sv: wgpu.StringView) Value {
         return Value.initStringLen(context, slice);
     }
     return Value.initStringLen(context, "");
+}
+
+/// __native.gpuCanvasUnconfigure(deviceId) → undefined
+fn gpuCanvasUnconfigureNative(
+    ctx: ?*Context,
+    _: Value,
+    _: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.undefined;
+    const bridge = getBridgeFromData(context, func_data) orelse return Value.undefined;
+    const gctx = bridge.gctx orelse return Value.undefined;
+    raw.c.wgpuSurfaceUnconfigure(@ptrCast(gctx.surface));
+    return Value.undefined;
+}
+
+/// __native.gpuShaderModuleGetCompilationInfo(shaderModuleId) → object
+fn gpuShaderModuleGetCompilationInfoNative(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const ht = getHandleTableFromData(context, func_data) orelse return Value.@"null";
+
+    if (argv.len < 1) return Value.@"null";
+
+    const mod_id_val: Value = @bitCast(argv[0]);
+    const mod_f64 = mod_id_val.toFloat64(context) catch return Value.@"null";
+    const mod_entry = ht.get(f64ToHandle(mod_f64)) catch return Value.@"null";
+    const module: wgpu.ShaderModule = mod_entry.handle.as(wgpu.ShaderModule) orelse return Value.@"null";
+
+    module.getCompilationInfo(&compilationInfoNoop, null);
+    return Value.initObject(context);
+}
+
+fn compilationInfoNoop(
+    status: wgpu.CompilationInfoRequestStatus,
+    info: ?*const wgpu.CompilationInfo,
+    userdata: ?*anyopaque,
+) callconv(.c) void {
+    _ = status;
+    _ = info;
+    _ = userdata;
+}
+
+/// __native.gpuCreateComputePipelineAsync(deviceId, descriptor) → Promise<number>
+///
+/// Creates a compute pipeline asynchronously and returns a JS Promise that
+/// resolves with the pipeline handle ID, or rejects on error.
+fn gpuCreateComputePipelineAsyncNative(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const bridge = getBridgeFromData(context, func_data) orelse return Value.@"null";
+    const gctx = bridge.gctx orelse return Value.@"null";
+
+    if (argv.len < 2) return Value.@"null";
+
+    const desc_val: Value = @bitCast(argv[1]);
+
+    // Parse compute descriptor
+    const compute_val = desc_val.getPropertyStr(context, "compute");
+    defer compute_val.deinit(context);
+    if (compute_val.isUndefined() or compute_val.isNull()) return Value.@"null";
+
+    const cm_val = compute_val.getPropertyStr(context, "module");
+    defer cm_val.deinit(context);
+    const cm_f64 = cm_val.toFloat64(context) catch return Value.@"null";
+    const cm_entry = bridge.handle_table_ptr.get(f64ToHandle(cm_f64)) catch return Value.@"null";
+    const compute_module: wgpu.ShaderModule = cm_entry.handle.as(wgpu.ShaderModule) orelse return Value.@"null";
+
+    const cep_val = compute_val.getPropertyStr(context, "entryPoint");
+    defer cep_val.deinit(context);
+    const compute_ep_owned = if (cep_val.isUndefined() or cep_val.isNull()) null else cep_val.toCString(context);
+    defer if (compute_ep_owned) |s| context.freeCString(s);
+    const entry_point_ptr: [*:0]const u8 = if (compute_ep_owned) |ep| ep else "main";
+
+    // Optional layout
+    var pipeline_layout: ?wgpu.PipelineLayout = null;
+    const layout_val = desc_val.getPropertyStr(context, "layout");
+    defer layout_val.deinit(context);
+    if (!layout_val.isUndefined() and !layout_val.isNull() and layout_val.isNumber()) {
+        const layout_f64 = layout_val.toFloat64(context) catch 0;
+        if (layout_f64 > 0) {
+            const layout_id = f64ToHandle(layout_f64);
+            if (bridge.handle_table_ptr.get(layout_id)) |entry| {
+                pipeline_layout = entry.handle.as(wgpu.PipelineLayout);
+            } else |_| {}
+        }
+    }
+
+    // Create Promise
+    const promise = Value.initPromiseCapability(context);
+    const promise_val = promise.value;
+
+    // Store pending state
+    {
+        bridge.pending_async_mutex.lock();
+        defer bridge.pending_async_mutex.unlock();
+        bridge.pending_async_pipeline = .{
+            .ctx = context,
+            .promise = promise,
+            .handle_table = bridge.handle_table_ptr,
+        };
+    }
+
+    // Call Dawn async
+    const async_desc = wgpu.ComputePipelineDescriptor{
+        .layout = pipeline_layout,
+        .compute = .{
+            .module = compute_module,
+            .entry_point = .{
+                .data = entry_point_ptr,
+                .length = std.mem.sliceTo(entry_point_ptr, 0).len,
+            },
+        },
+    };
+    gctx.device.createComputePipelineAsync(
+        async_desc,
+        &asyncPipelineCallback,
+        @ptrCast(bridge),
+    );
+
+    return promise_val;
+}
+
+fn asyncPipelineCallback(
+    status: wgpu.CreatePipelineAsyncStatus,
+    pipeline: wgpu.ComputePipeline,
+    message: wgpu.StringView,
+    userdata: ?*anyopaque,
+) callconv(.c) void {
+    _ = message;
+    const bridge: *GpuBridge = @ptrCast(@alignCast(userdata.?));
+
+    bridge.pending_async_mutex.lock();
+    defer bridge.pending_async_mutex.unlock();
+
+    if (bridge.pending_async_pipeline) |*pending| {
+        if (status == .success) {
+            const id = pending.handle_table.alloc(.{ .compute_pipeline = @ptrCast(pipeline) }) catch {
+                _ = pending.promise.reject.call(pending.ctx, .undefined, &.{});
+                bridge.pending_async_pipeline = null;
+                return;
+            };
+            const result = Value.initFloat64(@floatFromInt(id.toNumber()));
+            _ = pending.promise.resolve.call(pending.ctx, .undefined, &.{result});
+            result.deinit(pending.ctx);
+        } else {
+            _ = pending.promise.reject.call(pending.ctx, .undefined, &.{});
+        }
+        pending.promise.resolve.deinit(pending.ctx);
+        pending.promise.reject.deinit(pending.ctx);
+        pending.promise.value.deinit(pending.ctx);
+        bridge.pending_async_pipeline = null;
+    }
+}
+
+/// __native.gpuCreateRenderPipelineAsync(deviceId, descriptor) → Promise<number>
+///
+/// Creates a render pipeline asynchronously and returns a JS Promise that
+/// resolves with the pipeline handle ID, or rejects on error.
+fn gpuCreateRenderPipelineAsyncNative(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const bridge = getBridgeFromData(context, func_data) orelse return Value.@"null";
+    const gctx = bridge.gctx orelse return Value.@"null";
+
+    if (argv.len < 2) return Value.@"null";
+
+    const desc_val: Value = @bitCast(argv[1]);
+
+    // Parse layout
+    var pipeline_layout: ?wgpu.PipelineLayout = null;
+    const layout_val = desc_val.getPropertyStr(context, "layout");
+    defer layout_val.deinit(context);
+    if (!layout_val.isUndefined() and !layout_val.isNull() and layout_val.isNumber()) {
+        const layout_f64 = layout_val.toFloat64(context) catch 0;
+        if (layout_f64 > 0) {
+            const layout_id = f64ToHandle(layout_f64);
+            if (bridge.handle_table_ptr.get(layout_id)) |entry| {
+                pipeline_layout = entry.handle.as(wgpu.PipelineLayout);
+            } else |_| {}
+        }
+    }
+
+    // Parse vertex
+    const vert_val = desc_val.getPropertyStr(context, "vertex");
+    defer vert_val.deinit(context);
+    if (vert_val.isUndefined() or vert_val.isNull()) return Value.@"null";
+    const vm_val = vert_val.getPropertyStr(context, "module");
+    defer vm_val.deinit(context);
+    const vm_f64 = vm_val.toFloat64(context) catch return Value.@"null";
+    const vm_entry = bridge.handle_table_ptr.get(f64ToHandle(vm_f64)) catch return Value.@"null";
+    const vertex_module: wgpu.ShaderModule = vm_entry.handle.as(wgpu.ShaderModule) orelse return Value.@"null";
+    const vep_val = vert_val.getPropertyStr(context, "entryPoint");
+    defer vep_val.deinit(context);
+    const vertex_ep_owned = if (vep_val.isUndefined() or vep_val.isNull()) null else vep_val.toCString(context);
+    defer if (vertex_ep_owned) |s| context.freeCString(s);
+    const vertex_ep: ?[*:0]const u8 = vertex_ep_owned;
+
+    // Parse fragment
+    var frag_module: ?wgpu.ShaderModule = null;
+    var frag_ep: ?[*:0]const u8 = null;
+    const frag_val = desc_val.getPropertyStr(context, "fragment");
+    defer frag_val.deinit(context);
+    if (!frag_val.isUndefined() and !frag_val.isNull()) {
+        const fm_val = frag_val.getPropertyStr(context, "module");
+        defer fm_val.deinit(context);
+        const fm_f64 = fm_val.toFloat64(context) catch return Value.@"null";
+        const fm_entry = bridge.handle_table_ptr.get(f64ToHandle(fm_f64)) catch return Value.@"null";
+        frag_module = fm_entry.handle.as(wgpu.ShaderModule) orelse return Value.@"null";
+        const fep_val = frag_val.getPropertyStr(context, "entryPoint");
+        defer fep_val.deinit(context);
+        const fep_owned = if (fep_val.isUndefined() or fep_val.isNull()) null else fep_val.toCString(context);
+        defer if (fep_owned) |s| context.freeCString(s);
+        frag_ep = fep_owned;
+    }
+
+    // Create Promise
+    const promise = Value.initPromiseCapability(context);
+    const promise_val = promise.value;
+
+    {
+        bridge.pending_async_mutex.lock();
+        defer bridge.pending_async_mutex.unlock();
+        bridge.pending_async_pipeline = .{
+            .ctx = context,
+            .promise = promise,
+            .handle_table = bridge.handle_table_ptr,
+        };
+    }
+
+    var frag_targets = [_]wgpu.ColorTargetState{
+        .{ .format = .bgra8_unorm },
+    };
+    const async_rp_desc = wgpu.RenderPipelineDescriptor{
+        .layout = pipeline_layout,
+        .vertex = .{
+            .module = vertex_module,
+            .entry_point = if (vertex_ep) |ep|
+                .{ .data = ep, .length = std.mem.sliceTo(ep, 0).len }
+            else
+                .{ .data = "main", .length = 4 },
+        },
+        .fragment = if (frag_module) |fm|
+            &(wgpu.FragmentState{
+                .module = fm,
+                .entry_point = if (frag_ep) |ep|
+                    .{ .data = ep, .length = std.mem.sliceTo(ep, 0).len }
+                else
+                    .{ .data = "main", .length = 4 },
+                .targets = &frag_targets,
+                .target_count = 1,
+            })
+        else
+            null,
+    };
+    gctx.device.createRenderPipelineAsync(
+        async_rp_desc,
+        &asyncRenderPipelineCallback,
+        @ptrCast(bridge),
+    );
+
+    return promise_val;
+}
+
+fn asyncRenderPipelineCallback(
+    status: wgpu.CreatePipelineAsyncStatus,
+    pipeline: wgpu.RenderPipeline,
+    message: wgpu.StringView,
+    userdata: ?*anyopaque,
+) callconv(.c) void {
+    _ = message;
+    const bridge: *GpuBridge = @ptrCast(@alignCast(userdata.?));
+
+    bridge.pending_async_mutex.lock();
+    defer bridge.pending_async_mutex.unlock();
+
+    if (bridge.pending_async_pipeline) |*pending| {
+        if (status == .success) {
+            const id = pending.handle_table.alloc(.{ .render_pipeline = @ptrCast(pipeline) }) catch {
+                _ = pending.promise.reject.call(pending.ctx, .undefined, &.{});
+                bridge.pending_async_pipeline = null;
+                return;
+            };
+            const result = Value.initFloat64(@floatFromInt(id.toNumber()));
+            _ = pending.promise.resolve.call(pending.ctx, .undefined, &.{result});
+            result.deinit(pending.ctx);
+        } else {
+            _ = pending.promise.reject.call(pending.ctx, .undefined, &.{});
+        }
+        pending.promise.resolve.deinit(pending.ctx);
+        pending.promise.reject.deinit(pending.ctx);
+        pending.promise.value.deinit(pending.ctx);
+        bridge.pending_async_pipeline = null;
+    }
+}
+
+/// __native.gpuGetDeviceLostState(deviceId) → { reason: number, message: string } | null
+fn gpuGetDeviceLostStateNative(
+    ctx: ?*Context,
+    _: Value,
+    _: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const bridge = getBridgeFromData(context, func_data) orelse return Value.@"null";
+
+    if (bridge.device_lost_reason) |reason| {
+        const obj = Value.initObject(context);
+        obj.setPropertyStr(context, "reason", Value.initInt32(@intCast(@intFromEnum(reason)))) catch {};
+        return obj;
+    }
+    return Value.@"null";
+}
+
+/// __native.gpuBufferGetSize(bufferId) → number
+fn gpuBufferGetSizeNative(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const ht = getHandleTableFromData(context, func_data) orelse return Value.@"null";
+    if (argv.len < 1) return Value.@"null";
+    const id_val: Value = @bitCast(argv[0]);
+    const id_f64 = id_val.toFloat64(context) catch return Value.@"null";
+    const entry = ht.get(f64ToHandle(id_f64)) catch return Value.@"null";
+    const buffer: wgpu.Buffer = entry.handle.as(wgpu.Buffer) orelse return Value.@"null";
+    return Value.initFloat64(@floatFromInt(buffer.getSize()));
+}
+
+/// __native.gpuBufferGetUsage(bufferId) → number
+fn gpuBufferGetUsageNative(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const ht = getHandleTableFromData(context, func_data) orelse return Value.@"null";
+    if (argv.len < 1) return Value.@"null";
+    const id_val: Value = @bitCast(argv[0]);
+    const id_f64 = id_val.toFloat64(context) catch return Value.@"null";
+    const entry = ht.get(f64ToHandle(id_f64)) catch return Value.@"null";
+    const buffer: wgpu.Buffer = entry.handle.as(wgpu.Buffer) orelse return Value.@"null";
+    return Value.initFloat64(@floatFromInt(@as(u32, @bitCast(buffer.getUsage()))));
+}
+
+/// __native.gpuTextureGetWidth(textureId) → number
+fn gpuTextureGetWidthNative(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const ht = getHandleTableFromData(context, func_data) orelse return Value.@"null";
+    if (argv.len < 1) return Value.@"null";
+    const id_val: Value = @bitCast(argv[0]);
+    const id_f64 = id_val.toFloat64(context) catch return Value.@"null";
+    const entry = ht.get(f64ToHandle(id_f64)) catch return Value.@"null";
+    const tex: wgpu.Texture = entry.handle.as(wgpu.Texture) orelse return Value.@"null";
+    return Value.initFloat64(@floatFromInt(tex.getWidth()));
+}
+
+/// __native.gpuTextureGetHeight(textureId) → number
+fn gpuTextureGetHeightNative(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const ht = getHandleTableFromData(context, func_data) orelse return Value.@"null";
+    if (argv.len < 1) return Value.@"null";
+    const id_val: Value = @bitCast(argv[0]);
+    const id_f64 = id_val.toFloat64(context) catch return Value.@"null";
+    const entry = ht.get(f64ToHandle(id_f64)) catch return Value.@"null";
+    const tex: wgpu.Texture = entry.handle.as(wgpu.Texture) orelse return Value.@"null";
+    return Value.initFloat64(@floatFromInt(tex.getHeight()));
+}
+
+/// __native.gpuTextureGetFormat(textureId) → number (enum value)
+fn gpuTextureGetFormatNative(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const ht = getHandleTableFromData(context, func_data) orelse return Value.@"null";
+    if (argv.len < 1) return Value.@"null";
+    const id_val: Value = @bitCast(argv[0]);
+    const id_f64 = id_val.toFloat64(context) catch return Value.@"null";
+    const entry = ht.get(f64ToHandle(id_f64)) catch return Value.@"null";
+    const tex: wgpu.Texture = entry.handle.as(wgpu.Texture) orelse return Value.@"null";
+    return Value.initFloat64(@floatFromInt(@intFromEnum(tex.getFormat())));
+}
+
+fn deviceLostCallback(
+    reason: wgpu.DeviceLostReason,
+    message: wgpu.StringView,
+    userdata: ?*anyopaque,
+) callconv(.c) void {
+    _ = message;
+    const bridge: *GpuBridge = @ptrCast(@alignCast(userdata.?));
+    bridge.device_lost_reason = reason;
+}
+
+/// __native.gpuGetWgslLanguageFeatures() → object { size: N }
+/// Stub — returns empty features set. Real feature enumeration requires
+/// iterating the WGSLLanguageFeatures setlike which Dawn exposes via callback.
+fn gpuGetWgslLanguageFeaturesNative(
+    ctx: ?*Context,
+    _: Value,
+    _: []const c.JSValue,
+    _: c_int,
+    _: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const obj = Value.initObject(context);
+    obj.setPropertyStr(context, "size", Value.initInt32(0)) catch {};
+    return obj;
 }
 
 // ---------------------------------------------------------------------------

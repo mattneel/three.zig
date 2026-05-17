@@ -2947,6 +2947,46 @@ pub const Texture = *opaque {
         wgpuTextureRelease(texture);
     }
     extern fn wgpuTextureRelease(texture: Texture) void;
+
+    pub fn getWidth(texture: Texture) u32 {
+        return wgpuTextureGetWidth(texture);
+    }
+    extern fn wgpuTextureGetWidth(texture: Texture) u32;
+
+    pub fn getHeight(texture: Texture) u32 {
+        return wgpuTextureGetHeight(texture);
+    }
+    extern fn wgpuTextureGetHeight(texture: Texture) u32;
+
+    pub fn getFormat(texture: Texture) TextureFormat {
+        return wgpuTextureGetFormat(texture);
+    }
+    extern fn wgpuTextureGetFormat(texture: Texture) TextureFormat;
+
+    pub fn getUsage(texture: Texture) TextureUsage {
+        return wgpuTextureGetUsage(texture);
+    }
+    extern fn wgpuTextureGetUsage(texture: Texture) TextureUsage;
+
+    pub fn getDimension(texture: Texture) TextureDimension {
+        return wgpuTextureGetDimension(texture);
+    }
+    extern fn wgpuTextureGetDimension(texture: Texture) TextureDimension;
+
+    pub fn getDepthOrArrayLayers(texture: Texture) u32 {
+        return wgpuTextureGetDepthOrArrayLayers(texture);
+    }
+    extern fn wgpuTextureGetDepthOrArrayLayers(texture: Texture) u32;
+
+    pub fn getMipLevelCount(texture: Texture) u32 {
+        return wgpuTextureGetMipLevelCount(texture);
+    }
+    extern fn wgpuTextureGetMipLevelCount(texture: Texture) u32;
+
+    pub fn getSampleCount(texture: Texture) u32 {
+        return wgpuTextureGetSampleCount(texture);
+    }
+    extern fn wgpuTextureGetSampleCount(texture: Texture) u32;
 };
 
 pub const TextureView = *opaque {
