@@ -112,8 +112,18 @@ function createNavigator(): {
 // ---------------------------------------------------------------------------
 
 export class DocumentStub extends EventTarget {
-  body: EventTarget = new EventTarget();
-  documentElement: EventTarget = new EventTarget();
+  body: any = {
+    appendChild(child: any) { return child; },
+    removeChild(child: any) { return child; },
+    addEventListener(_type: string, _fn: any) {},
+    removeEventListener(_type: string, _fn: any) {},
+  };
+  documentElement: any = {
+    appendChild(child: any) { return child; },
+    removeChild(child: any) { return child; },
+    addEventListener(_type: string, _fn: any) {},
+    removeEventListener(_type: string, _fn: any) {},
+  };
   visibilityState: string = "visible";
   hidden: boolean = false;
 

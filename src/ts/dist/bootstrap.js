@@ -1163,8 +1163,30 @@
     };
   }
   var DocumentStub = class extends EventTarget {
-    body = new EventTarget();
-    documentElement = new EventTarget();
+    body = {
+      appendChild(child) {
+        return child;
+      },
+      removeChild(child) {
+        return child;
+      },
+      addEventListener(_type, _fn) {
+      },
+      removeEventListener(_type, _fn) {
+      }
+    };
+    documentElement = {
+      appendChild(child) {
+        return child;
+      },
+      removeChild(child) {
+        return child;
+      },
+      addEventListener(_type, _fn) {
+      },
+      removeEventListener(_type, _fn) {
+      }
+    };
     visibilityState = "visible";
     hidden = false;
     _canvas;

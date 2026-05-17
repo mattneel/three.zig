@@ -46,9 +46,16 @@ pub const JsEngine = struct {
         if (value.isException()) {
             const exc = self.context.getException();
             if (exc.toCString(self.context)) |msg| {
-                log.info("{s}", .{std.mem.span(msg)});
+                log.err("JS error: {s}", .{std.mem.span(msg)});
                 self.context.freeCString(msg);
             }
+            // Try to get stack trace
+            const stack = exc.getPropertyStr(self.context, "stack");
+            if (stack.toCString(self.context)) |stack_msg| {
+                log.err("  stack: {s}", .{std.mem.span(stack_msg)});
+                self.context.freeCString(stack_msg);
+            }
+            stack.deinit(self.context);
             exc.deinit(self.context);
             return error.JSException;
         }
