@@ -670,6 +670,26 @@ pub const GpuBridge = struct {
         );
         native_obj.setPropertyStr(ctx, "gpuRenderBundleEncoderFinish", rbe_finish_fn) catch return error.JSError;
 
+        // gpuCreateQuerySet(deviceId, descriptor) → query set handle
+        const create_qs_fn = Value.initCFunctionData(
+            ctx,
+            &gpuCreateQuerySetNative,
+            2,
+            0,
+            &.{ht_ptr_num},
+        );
+        native_obj.setPropertyStr(ctx, "gpuCreateQuerySet", create_qs_fn) catch return error.JSError;
+
+        // gpuQuerySetDestroy(querySetId) → undefined
+        const qs_destroy_fn = Value.initCFunctionData(
+            ctx,
+            &gpuQuerySetDestroyNative,
+            1,
+            0,
+            &.{ht_ptr_num},
+        );
+        native_obj.setPropertyStr(ctx, "gpuQuerySetDestroy", qs_destroy_fn) catch return error.JSError;
+
         // gpuCommandEncoderFinish(encoderId) → command buffer handle ID
         const ce_finish_fn = Value.initCFunctionData(
             ctx,
@@ -3110,6 +3130,82 @@ fn gpuRenderBundleEncoderFinishNative(
     return Value.initFloat64(@floatFromInt(id.toNumber()));
 }
 
+/// __native.gpuCreateQuerySet(deviceId, descriptor) → number (handle ID)
+///
+/// Creates a query set for occlusion or timestamp queries.
+fn gpuCreateQuerySetNative(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    const bridge = getBridgeFromData(context, func_data) orelse return Value.@"null";
+    const ht = bridge.handle_table_ptr;
+    const gctx = bridge.gctx orelse return Value.@"null";
+
+    if (argv.len < 2) return Value.@"null";
+
+    const desc_val: Value = @bitCast(argv[1]);
+
+    // Parse type: "occlusion", "timestamp", or "pipeline-statistics"
+    var query_type: wgpu.QueryType = .occlusion;
+    const type_val = desc_val.getPropertyStr(context, "type");
+    defer type_val.deinit(context);
+    if (type_val.toCString(context)) |s| {
+        defer context.freeCString(s);
+        const str = std.mem.span(s);
+        if (std.mem.eql(u8, str, "timestamp")) query_type = .timestamp
+        else if (std.mem.eql(u8, str, "pipeline-statistics")) query_type = .pipeline_statistics;
+    }
+
+    // Parse count
+    var count: u32 = 1;
+    const count_val = desc_val.getPropertyStr(context, "count");
+    defer count_val.deinit(context);
+    if (!count_val.isUndefined()) {
+        count = @intFromFloat(count_val.toFloat64(context) catch 1);
+    }
+
+    var raw_desc = std.mem.zeroes(wgpu.QuerySetDescriptor);
+    raw_desc.query_type = query_type;
+    raw_desc.count = count;
+
+    const device: wgpu.Device = @ptrCast(gctx.device);
+    const query_set = device.createQuerySet(raw_desc);
+
+    const id = ht.alloc(.{ .query_set = @ptrCast(query_set) }) catch return Value.@"null";
+    return Value.initFloat64(@floatFromInt(id.toNumber()));
+}
+
+/// __native.gpuQuerySetDestroy(querySetId) → undefined
+///
+/// Destroys a query set and frees its handle.
+fn gpuQuerySetDestroyNative(
+    ctx: ?*Context,
+    _: Value,
+    argv: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.undefined;
+    const ht = getHandleTableFromData(context, func_data) orelse return Value.undefined;
+
+    if (argv.len < 1) return Value.undefined;
+
+    const qs_id_val: Value = @bitCast(argv[0]);
+    const qs_f64 = qs_id_val.toFloat64(context) catch return Value.undefined;
+    const qs_id = f64ToHandle(qs_f64);
+    const qs_entry = ht.get(qs_id) catch return Value.undefined;
+    const qs: wgpu.QuerySet = qs_entry.handle.as(wgpu.QuerySet) orelse return Value.undefined;
+
+    qs.destroy();
+    ht.free(qs_id) catch {};
+
+    return Value.undefined;
+}
+
 /// __native.gpuCommandEncoderFinish(encoderId) → number (command buffer handle ID)
 fn gpuCommandEncoderFinishNative(
     ctx: ?*Context,
@@ -4745,6 +4841,8 @@ test "register creates command encoding functions on __native" {
         \\typeof __native.gpuRenderPassDrawIndexedIndirect === 'function' &&
         \\typeof __native.gpuCreateRenderBundleEncoder === 'function' &&
         \\typeof __native.gpuRenderBundleEncoderFinish === 'function' &&
+        \\typeof __native.gpuCreateQuerySet === 'function' &&
+        \\typeof __native.gpuQuerySetDestroy === 'function' &&
         \\typeof __native.gpuCommandEncoderFinish === 'function' &&
         \\typeof __native.gpuQueueSubmit === 'function'
     , "<test>");
@@ -5786,6 +5884,71 @@ test "gpuRenderBundleEncoderFinish validates args and frees encoder" {
         \\  // Valid call without gctx -> returns null
         \\  var r2 = __native.gpuRenderBundleEncoderFinish(encId);
         \\  if (r2 !== null) return 'expected null without gctx';
+        \\  return true;
+        \\})()
+    ;
+    var result = try engine.eval(js_src, "<test>");
+    defer result.deinit();
+
+    try testing.expectEqual(@as(i32, 1), try result.toInt32());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9a: QuerySet — lifecycle (create + destroy)
+// ---------------------------------------------------------------------------
+
+test "gpuCreateQuerySet validates args and returns null without gctx" {
+    var ht = try HandleTable.init(testing.allocator, 32);
+    defer ht.deinit(testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, null);
+    defer bridge.deinit();
+
+    var engine = try JsEngine.init(testing.allocator);
+    defer engine.deinit();
+
+    try bridge.register(engine.context);
+
+    const js_src =
+        \\(function() {
+        \\  var devId = __native.gpuRequestDevice(0);
+        \\  // Missing descriptor -> should return null, not crash
+        \\  var r1 = __native.gpuCreateQuerySet(devId);
+        \\  if (r1 !== null) return 'expected null for missing descriptor';
+        \\  // Valid descriptor without gctx -> returns null
+        \\  var r2 = __native.gpuCreateQuerySet(devId, { type: 'occlusion', count: 2 });
+        \\  if (r2 !== null) return 'expected null without gctx';
+        \\  return true;
+        \\})()
+    ;
+    var result = try engine.eval(js_src, "<test>");
+    defer result.deinit();
+
+    try testing.expectEqual(@as(i32, 1), try result.toInt32());
+}
+
+test "gpuQuerySetDestroy validates args and returns undefined" {
+    var ht = try HandleTable.init(testing.allocator, 32);
+    defer ht.deinit(testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, null);
+    defer bridge.deinit();
+
+    var engine = try JsEngine.init(testing.allocator);
+    defer engine.deinit();
+
+    try bridge.register(engine.context);
+
+    const js_src =
+        \\(function() {
+        \\  var devId = __native.gpuRequestDevice(0);
+        \\  var qsId = __native.gpuCreateQuerySet(devId, { type: 'occlusion', count: 2 });
+        \\  // Missing args -> should return undefined
+        \\  var r1 = __native.gpuQuerySetDestroy();
+        \\  if (r1 !== undefined) return 'expected undefined for missing args';
+        \\  // Valid call without gctx -> returns undefined (no-op)
+        \\  var r2 = __native.gpuQuerySetDestroy(qsId);
+        \\  if (r2 !== undefined) return 'expected undefined without gctx';
         \\  return true;
         \\})()
     ;
