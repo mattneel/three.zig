@@ -85,7 +85,7 @@ pub const Runtime = struct {
         var handle_table = try HandleTable.init(allocator, config.max_handles);
         errdefer handle_table.deinit(allocator);
 
-        var gpu_bridge = try GpuBridge.init(&handle_table, window.gctx);
+        var gpu_bridge = try GpuBridge.init(&handle_table, allocator, window.window_provider);
         errdefer gpu_bridge.deinit();
         try gpu_bridge.register(engine.context);
 

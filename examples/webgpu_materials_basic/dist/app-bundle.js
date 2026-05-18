@@ -57031,6 +57031,7 @@ var<${access}> ${name} : ${structName};`;
   var mouseY = 0;
   var windowHalfX;
   var windowHalfY;
+  var lastLog = 0;
   function init() {
     windowHalfX = window.innerWidth / 2;
     windowHalfY = window.innerHeight / 2;
@@ -57084,6 +57085,10 @@ var<${access}> ${name} : ${structName};`;
   }
   start();
   function animate() {
+    if (spheres.length > 0 && Date.now() - lastLog > 1e3) {
+      console.log("frame, spheres:", spheres.length, "renderer:", !!renderer);
+      lastLog = Date.now();
+    }
     var timer = 1e-4 * Date.now();
     camera.position.x += (mouseX - camera.position.x) * 0.05;
     camera.position.y += (-mouseY - camera.position.y) * 0.05;

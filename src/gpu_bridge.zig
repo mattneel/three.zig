@@ -99,53 +99,32 @@ const PendingAsyncPipeline = struct {
     handle_table: *HandleTable,
 };
 
-/// The GPU bridge connects JavaScript WebGPU API calls to the pre-created
-/// Dawn adapter, device, and queue (source-built Dawn, not zgpu's prebuilt binaries).
-///
-/// Since the native GraphicsContext creates everything at init time, the bridge
-/// simply wraps the existing GPU objects as handle IDs and returns them
-/// when JavaScript calls requestAdapter() / requestDevice() / getQueue().
+/// The GPU bridge connects JavaScript WebGPU API calls to Dawn.
+/// GraphicsContext (instance, surface, adapter, device, queue) is created
+/// JIT when Three.js calls requestAdapter()/requestDevice(), matching
+/// the browser's initialization flow.
 pub const GpuBridge = struct {
     handle_table_ptr: *HandleTable,
-    gctx: ?*dawn.GraphicsContext,
-    adapter_id: HandleId,
-    device_id: HandleId,
-    queue_id: HandleId,
+    allocator: std.mem.Allocator,
+    window_provider: dawn.WindowProvider,
+    gctx: ?*dawn.GraphicsContext = null,
+    adapter_id: ?HandleId = null,
+    device_id: ?HandleId = null,
+    queue_id: ?HandleId = null,
     frame_texture_acquired: bool = false,
-    /// Track the JS handle for the current swapchain view so we can retire the
-    /// handle after present. GraphicsContext owns the actual Dawn view
-    /// lifetime.
     prev_swapchain_view: ?HandleId = null,
     fps_overlay: FpsOverlay = .{},
     device_lost_reason: ?wgpu.DeviceLostReason = null,
     pending_async_pipeline: ?PendingAsyncPipeline = null,
     pending_async_mutex: std.Thread.Mutex = .{},
 
-    /// Initialize the bridge by allocating handle table entries for the
-    /// pre-existing adapter, device, and queue from the native GraphicsContext.
-    /// Stores real wgpu object pointers so native functions can forward
-    /// GPU commands to Dawn.
-    ///
-    /// Pass null for gctx in test/stub mode â€” handle pointers will be null.
-    pub fn init(ht: *HandleTable, gctx: ?*dawn.GraphicsContext) !GpuBridge {
-        const adapter_ptr: ?*anyopaque = if (gctx) |g| @ptrCast(g.adapter) else null;
-        const device_ptr: ?*anyopaque = if (gctx) |g| @ptrCast(g.device) else null;
-        const queue_ptr: ?*anyopaque = if (gctx) |g| @ptrCast(g.queue) else null;
-
-        const adapter_id = ht.alloc(.{ .adapter = adapter_ptr }) catch return error.GpuBridgeInitFailed;
-        errdefer ht.free(adapter_id) catch {};
-
-        const device_id = ht.alloc(.{ .device = device_ptr }) catch return error.GpuBridgeInitFailed;
-        errdefer ht.free(device_id) catch {};
-
-        const queue_id = ht.alloc(.{ .queue = queue_ptr }) catch return error.GpuBridgeInitFailed;
-
+    /// Initialize the bridge with just the window provider.
+    /// The actual Dawn GraphicsContext is created on first requestAdapter().
+    pub fn init(ht: *HandleTable, allocator: std.mem.Allocator, window_provider: dawn.WindowProvider) !GpuBridge {
         return .{
             .handle_table_ptr = ht,
-            .gctx = gctx,
-            .adapter_id = adapter_id,
-            .device_id = device_id,
-            .queue_id = queue_id,
+            .allocator = allocator,
+            .window_provider = window_provider,
         };
     }
 
@@ -164,16 +143,23 @@ pub const GpuBridge = struct {
         }
     }
 
-    /// Release the bridge's handle table entries.
+    /// Release the bridge's handle table entries and GPU resources.
     pub fn deinit(self: *GpuBridge) void {
         if (self.prev_swapchain_view) |prev_id| {
             self.handle_table_ptr.free(prev_id) catch {};
             self.prev_swapchain_view = null;
         }
         self.fps_overlay.deinit();
-        self.handle_table_ptr.free(self.queue_id) catch {};
-        self.handle_table_ptr.free(self.device_id) catch {};
-        self.handle_table_ptr.free(self.adapter_id) catch {};
+        if (self.queue_id) |id| self.handle_table_ptr.free(id) catch {};
+        if (self.device_id) |id| self.handle_table_ptr.free(id) catch {};
+        if (self.adapter_id) |id| self.handle_table_ptr.free(id) catch {};
+        if (self.gctx) |gctx| gctx.destroy(self.allocator);
+    }
+
+    /// Ensure the GraphicsContext is created (called by requestAdapter).
+    fn ensureGpuContext(self: *GpuBridge) !void {
+        if (self.gctx != null) return;
+        self.gctx = try dawn.GraphicsContext.create(self.allocator, self.window_provider, .{});
     }
 
     /// Recreate the swapchain when framebuffer size changes.
@@ -242,17 +228,17 @@ pub const GpuBridge = struct {
         defer native_obj.deinit(ctx);
 
         // Bind each function with its handle ID as closure data.
-        const adapter_num = Value.initFloat64(handleToF64(self.adapter_id));
-        const device_num = Value.initFloat64(handleToF64(self.device_id));
-        const queue_num = Value.initFloat64(handleToF64(self.queue_id));
 
-        // gpuRequestAdapter() â€” closure data[0] = adapter handle
+        // We encode the *const GpuBridge pointer as f64 in closure data[0].
+        const ht_ptr_num = Value.initFloat64(ptrToF64(self));
+
+        // gpuRequestAdapter() â€” creates GraphicsContext on first call
         const req_adapter_fn = Value.initCFunctionData(
             ctx,
             &gpuRequestAdapterNative,
-            0, // length (no JS args)
-            0, // magic
-            &.{adapter_num},
+            0,
+            0,
+            &.{ht_ptr_num},
         );
         native_obj.setPropertyStr(ctx, "gpuRequestAdapter", req_adapter_fn) catch return error.JSError;
 
@@ -266,30 +252,27 @@ pub const GpuBridge = struct {
         );
         native_obj.setPropertyStr(ctx, "gpuGetWgslLanguageFeatures", wgsl_features_fn) catch return error.JSError;
 
-        // gpuRequestDevice(adapterId) â€” closure data[0] = device handle
+        // gpuRequestDevice(adapterId) â†’ device handle (allocated on demand)
         const req_device_fn = Value.initCFunctionData(
             ctx,
             &gpuRequestDeviceNative,
-            1, // length (takes adapterId arg, but we ignore it and return pre-created device)
+            1,
             0,
-            &.{device_num},
+            &.{ht_ptr_num},
         );
         native_obj.setPropertyStr(ctx, "gpuRequestDevice", req_device_fn) catch return error.JSError;
 
-        // gpuGetQueue(deviceId) â€” closure data[0] = queue handle
+        // gpuGetQueue(deviceId) â†’ queue handle (allocated on demand)
         const get_queue_fn = Value.initCFunctionData(
             ctx,
             &gpuGetQueueNative,
-            1, // length (takes deviceId arg)
+            1,
             0,
-            &.{queue_num},
+            &.{ht_ptr_num},
         );
         native_obj.setPropertyStr(ctx, "gpuGetQueue", get_queue_fn) catch return error.JSError;
 
         // --- Resource creation / destruction functions ---
-        // These need the GpuBridge pointer to access handle table and gctx.
-        // We encode the *const GpuBridge pointer as f64 in closure data[0].
-        const ht_ptr_num = Value.initFloat64(ptrToF64(self));
 
         // gpuDeviceDestroy(deviceId) â†’ undefined
         const device_destroy_fn = Value.initCFunctionData(
@@ -1126,26 +1109,65 @@ pub const GpuBridge = struct {
 
 /// __native.gpuRequestAdapter() â†’ number (adapter handle ID)
 fn gpuRequestAdapterNative(
-    _: ?*Context,
+    ctx: ?*Context,
     _: Value,
     _: []const c.JSValue,
     _: c_int,
     func_data: [*c]c.JSValue,
 ) Value {
-    // data[0] is the adapter handle ID as f64
-    return @bitCast(func_data[0]);
+    const context = ctx orelse return Value.@"null";
+    var bridge = getBridgeFromData(context, func_data) orelse return Value.@"null";
+
+    // Create the GraphicsContext on first call (JIT).
+    bridge.ensureGpuContext() catch return Value.@"null";
+    const gctx = bridge.gctx orelse return Value.@"null";
+
+    // Allocate adapter handle if not already done
+    if (bridge.adapter_id == null) {
+        const id = bridge.handle_table_ptr.alloc(.{ .adapter = @ptrCast(gctx.adapter) }) catch return Value.@"null";
+        bridge.adapter_id = id;
+    }
+    return Value.initFloat64(handleToF64(bridge.adapter_id.?));
 }
 
 /// __native.gpuRequestDevice(adapterId) â†’ number (device handle ID)
 fn gpuRequestDeviceNative(
-    _: ?*Context,
+    ctx: ?*Context,
     _: Value,
     _: []const c.JSValue,
     _: c_int,
     func_data: [*c]c.JSValue,
 ) Value {
-    // data[0] is the device handle ID as f64
-    return @bitCast(func_data[0]);
+    const context = ctx orelse return Value.@"null";
+    var bridge = getBridgeFromData(context, func_data) orelse return Value.@"null";
+    const gctx = bridge.gctx orelse return Value.@"null";
+
+    // Allocate device handle if not already done
+    if (bridge.device_id == null) {
+        const id = bridge.handle_table_ptr.alloc(.{ .device = @ptrCast(gctx.device) }) catch return Value.@"null";
+        bridge.device_id = id;
+    }
+    return Value.initFloat64(handleToF64(bridge.device_id.?));
+}
+
+/// __native.gpuGetQueue(deviceId) â†’ number (queue handle ID)
+fn gpuGetQueueNative(
+    ctx: ?*Context,
+    _: Value,
+    _: []const c.JSValue,
+    _: c_int,
+    func_data: [*c]c.JSValue,
+) Value {
+    const context = ctx orelse return Value.@"null";
+    var bridge = getBridgeFromData(context, func_data) orelse return Value.@"null";
+    const gctx = bridge.gctx orelse return Value.@"null";
+
+    // Allocate queue handle if not already done
+    if (bridge.queue_id == null) {
+        const id = bridge.handle_table_ptr.alloc(.{ .queue = @ptrCast(gctx.queue) }) catch return Value.@"null";
+        bridge.queue_id = id;
+    }
+    return Value.initFloat64(handleToF64(bridge.queue_id.?));
 }
 
 /// __native.gpuDeviceDestroy(deviceId) â†’ undefined
@@ -1179,18 +1201,6 @@ fn gpuDeviceDestroyNative(
     ht.free(device_id) catch {};
 
     return Value.undefined;
-}
-
-/// __native.gpuGetQueue(deviceId) â†’ number (queue handle ID)
-fn gpuGetQueueNative(
-    _: ?*Context,
-    _: Value,
-    _: []const c.JSValue,
-    _: c_int,
-    func_data: [*c]c.JSValue,
-) Value {
-    // data[0] is the queue handle ID as f64
-    return @bitCast(func_data[0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -1888,6 +1898,20 @@ fn gpuCreateBindGroupLayoutNative(
                     sample_type = @intCast(translateLegacyTextureSampleTypeNumeric(n));
                 }
                 entry.texture.sampleType = sample_type;
+
+                // Parse viewDimension
+                const vd_val = tex_val.getPropertyStr(context, "viewDimension");
+                defer vd_val.deinit(context);
+                if (safeToCString(vd_val, context)) |s| {
+                    defer context.freeCString(s);
+                    const str = std.mem.span(s);
+                    if (std.mem.eql(u8, str, "1d")) entry.texture.viewDimension = raw.c.WGPUTextureViewDimension_1D
+                    else if (std.mem.eql(u8, str, "2d")) entry.texture.viewDimension = raw.c.WGPUTextureViewDimension_2D
+                    else if (std.mem.eql(u8, str, "2d-array")) entry.texture.viewDimension = raw.c.WGPUTextureViewDimension_2DArray
+                    else if (std.mem.eql(u8, str, "cube")) entry.texture.viewDimension = raw.c.WGPUTextureViewDimension_Cube
+                    else if (std.mem.eql(u8, str, "cube-array")) entry.texture.viewDimension = raw.c.WGPUTextureViewDimension_CubeArray
+                    else if (std.mem.eql(u8, str, "3d")) entry.texture.viewDimension = raw.c.WGPUTextureViewDimension_3D;
+                }
             }
 
             // Parse storageTexture binding
@@ -5804,47 +5828,54 @@ fn f64ToPtr(comptime T: type, f: f64) ?T {
 const testing = std.testing;
 const JsEngine = @import("js_engine.zig").JsEngine;
 
-test "GpuBridge init allocates three handles" {
+fn dummyWindowProvider() dawn.WindowProvider {
+    return .{
+        .window = @ptrFromInt(@as(usize, 1)),
+        .fn_getTime = @ptrCast(&dummyGetTime),
+        .fn_getFramebufferSize = @ptrCast(&dummyGetSize),
+        .fn_getX11Display = @ptrCast(&dummyNull),
+        .fn_getX11Window = @ptrCast(&dummyNull),
+        .fn_getWaylandDisplay = @ptrCast(&dummyNull),
+        .fn_getWaylandSurface = @ptrCast(&dummyNull),
+        .fn_getCocoaWindow = @ptrCast(&dummyNull),
+        .fn_getWin32Window = @ptrCast(&dummyNull),
+    };
+}
+fn dummyGetTime() f64 { return 0; }
+fn dummyGetSize(_: *anyopaque) [2]u32 { return .{ 800, 600 }; }
+fn dummyNull() ?*anyopaque { return null; }
+
+test "GpuBridge init allocates zero handles (JIT)" {
     var ht = try HandleTable.init(testing.allocator, 8);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
 
-    try testing.expectEqual(@as(u32, 3), ht.activeCount());
-    try testing.expect(ht.isValid(bridge.adapter_id));
-    try testing.expect(ht.isValid(bridge.device_id));
-    try testing.expect(ht.isValid(bridge.queue_id));
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
+
+    try testing.expectEqual(@as(u32, 0), ht.activeCount());
+    try testing.expect(bridge.adapter_id == null);
+    try testing.expect(bridge.device_id == null);
+    try testing.expect(bridge.queue_id == null);
 }
 
-test "GpuBridge deinit frees all three handles" {
+test "GpuBridge deinit cleans up" {
     var ht = try HandleTable.init(testing.allocator, 8);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
     bridge.deinit();
 
     try testing.expectEqual(@as(u32, 0), ht.activeCount());
-    try testing.expect(!ht.isValid(bridge.adapter_id));
-    try testing.expect(!ht.isValid(bridge.device_id));
-    try testing.expect(!ht.isValid(bridge.queue_id));
-}
-
-test "GpuBridge handle types are correct" {
-    var ht = try HandleTable.init(testing.allocator, 8);
-    defer ht.deinit(testing.allocator);
-
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
-
-    const adapter_entry = try ht.get(bridge.adapter_id);
-    try testing.expectEqual(handle_table.HandleType.adapter, adapter_entry.handle_type);
-
-    const device_entry = try ht.get(bridge.device_id);
-    try testing.expectEqual(handle_table.HandleType.device, device_entry.handle_type);
-
-    const queue_entry = try ht.get(bridge.queue_id);
-    try testing.expectEqual(handle_table.HandleType.queue, queue_entry.handle_type);
 }
 
 test "HandleId round-trip through f64 conversion" {
@@ -5860,8 +5891,13 @@ test "register creates __native object with GPU functions" {
     var ht = try HandleTable.init(testing.allocator, 8);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -5883,8 +5919,14 @@ test "gpuRequestAdapter returns adapter handle ID as number" {
     var ht = try HandleTable.init(testing.allocator, 8);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const context_result = try createTestGpuContext(testing.allocator);
+    const gctx = context_result[0];
+    const glfw_window = context_result[1];
+    defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx; // Use the pre-created context (skip JIT)
+    // Don't call bridge.deinit() â€” destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -5896,32 +5938,33 @@ test "gpuRequestAdapter returns adapter handle ID as number" {
 
     const returned_f64 = try result.toFloat64();
     const returned_id = f64ToHandle(returned_f64);
-
-    try testing.expectEqual(bridge.adapter_id.index, returned_id.index);
-    try testing.expectEqual(bridge.adapter_id.generation, returned_id.generation);
+    try testing.expect(ht.isValid(returned_id));
+    try testing.expectEqual(bridge.adapter_id.?.index, returned_id.index);
+    try testing.expectEqual(bridge.adapter_id.?.generation, returned_id.generation);
 }
 
 test "gpuRequestDevice returns device handle ID as number" {
     var ht = try HandleTable.init(testing.allocator, 8);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
-
     try bridge.register(engine.context);
 
-    // Pass the adapter handle as argument (ignored in current impl)
     var result = try engine.eval("__native.gpuRequestDevice(0)", "<test>");
     defer result.deinit();
-
     const returned_f64 = try result.toFloat64();
     const returned_id = f64ToHandle(returned_f64);
-
-    try testing.expectEqual(bridge.device_id.index, returned_id.index);
-    try testing.expectEqual(bridge.device_id.generation, returned_id.generation);
+    try testing.expect(ht.isValid(returned_id));
+    try testing.expectEqual(bridge.device_id.?.index, returned_id.index);
+    try testing.expectEqual(bridge.device_id.?.generation, returned_id.generation);
 }
 
 test "createTestGpuContext creates real GPU context" {
@@ -5939,7 +5982,7 @@ test "gpuDeviceDestroy with real hardware" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -5964,31 +6007,37 @@ test "gpuGetQueue returns queue handle ID as number" {
     var ht = try HandleTable.init(testing.allocator, 8);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
-
     try bridge.register(engine.context);
 
-    // Pass the device handle as argument (ignored in current impl)
     var result = try engine.eval("__native.gpuGetQueue(0)", "<test>");
     defer result.deinit();
-
     const returned_f64 = try result.toFloat64();
     const returned_id = f64ToHandle(returned_f64);
-
-    try testing.expectEqual(bridge.queue_id.index, returned_id.index);
-    try testing.expectEqual(bridge.queue_id.generation, returned_id.generation);
+    try testing.expect(ht.isValid(returned_id));
+    try testing.expectEqual(bridge.queue_id.?.index, returned_id.index);
+    try testing.expectEqual(bridge.queue_id.?.generation, returned_id.generation);
 }
 
 test "register preserves existing __native properties" {
     var ht = try HandleTable.init(testing.allocator, 8);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6010,8 +6059,12 @@ test "returned handle IDs are valid in handle table" {
     var ht = try HandleTable.init(testing.allocator, 8);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6039,8 +6092,13 @@ test "register creates pipeline creation functions on __native" {
     var ht = try HandleTable.init(testing.allocator, 16);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6064,8 +6122,13 @@ test "gpuCreateShaderModule returns null without GPU context" {
     var ht = try HandleTable.init(testing.allocator, 16);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6089,8 +6152,13 @@ test "gpuCreateShaderModule extracts WGSL code string" {
     var ht = try HandleTable.init(testing.allocator, 16);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6117,8 +6185,13 @@ test "gpuCreateBindGroupLayout returns valid handle" {
     var ht = try HandleTable.init(testing.allocator, 16);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6142,8 +6215,13 @@ test "gpuCreatePipelineLayout returns valid handle" {
     var ht = try HandleTable.init(testing.allocator, 16);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6167,8 +6245,13 @@ test "gpuCreateRenderPipeline returns valid handle with nested descriptor" {
     var ht = try HandleTable.init(testing.allocator, 16);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6199,8 +6282,13 @@ test "gpuCreateComputePipeline returns valid handle" {
     var ht = try HandleTable.init(testing.allocator, 16);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6226,8 +6314,13 @@ test "gpuCreateBindGroup returns valid handle" {
     var ht = try HandleTable.init(testing.allocator, 16);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6254,8 +6347,13 @@ test "pipeline creation with invalid device returns null" {
     var ht = try HandleTable.init(testing.allocator, 16);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6279,8 +6377,13 @@ test "handle table allocates correct types for each pipeline creation" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6318,7 +6421,7 @@ test "register creates resource creation functions on __native" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6343,7 +6446,7 @@ test "gpuCreateBuffer allocates buffer handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6364,7 +6467,7 @@ test "gpuCreateBuffer parses descriptor fields" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6387,7 +6490,7 @@ test "gpuCreateTexture allocates texture handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6408,7 +6511,7 @@ test "gpuCreateTextureView allocates texture_view handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6429,7 +6532,7 @@ test "gpuCreateTextureView works with empty descriptor" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6451,7 +6554,7 @@ test "gpuCreateSampler allocates sampler handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6472,7 +6575,7 @@ test "gpuCreateSampler works with empty descriptor" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6494,7 +6597,7 @@ test "gpuDestroyBuffer destroys and frees handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6524,7 +6627,7 @@ test "gpuDestroyTexture destroys and frees handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6552,7 +6655,7 @@ test "resource creation allocates correct handle types" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, dummyWindowProvider());
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -6597,8 +6700,13 @@ test "register creates command encoding functions on __native" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6649,8 +6757,13 @@ test "gpuCreateCommandEncoder returns valid handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6674,8 +6787,13 @@ test "gpuCreateCommandEncoder with invalid device returns null" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6698,8 +6816,13 @@ test "full command encoding chain: create â†’ beginRenderPass â†’ draw â†’ end â
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6734,8 +6857,13 @@ test "gpuCommandEncoderFinish returns valid command buffer handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6760,8 +6888,13 @@ test "gpuCommandEncoderFinish frees the encoder handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6789,8 +6922,13 @@ test "gpuRenderPassEnd frees the render pass handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6819,8 +6957,13 @@ test "full chain with setPipeline, setBindGroup, setVertexBuffer, setIndexBuffer
     var ht = try HandleTable.init(testing.allocator, 64);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6858,8 +7001,13 @@ test "gpuQueueSubmit frees multiple command buffers" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6898,8 +7046,13 @@ test "register creates T19 swap chain functions on __native" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6920,8 +7073,13 @@ test "gpuConfigureContext is callable and returns undefined" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6945,8 +7103,13 @@ test "gpuGetCurrentTexture returns a valid texture handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6964,8 +7127,13 @@ test "gpuPresent is callable and returns undefined" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -6988,8 +7156,13 @@ test "full frame cycle: configure â†’ getCurrentTexture â†’ createView â†’ prese
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -7039,8 +7212,13 @@ test "T22 native functions are registered" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -7062,8 +7240,13 @@ test "gpuQueueWriteBuffer validates handles and returns undefined" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -7090,8 +7273,13 @@ test "gpuQueueWriteTexture validates handles and returns undefined" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -7118,8 +7306,13 @@ test "gpuRenderPipelineGetBindGroupLayout returns a bind_group_layout handle" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -7151,7 +7344,7 @@ test "gpuCommandEncoderBeginComputePass with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7182,7 +7375,7 @@ test "gpuComputePassEncoderEnd with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7214,7 +7407,7 @@ test "gpuCreateComputePipeline with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7252,7 +7445,7 @@ test "gpuComputePassEncoderDispatchWorkgroupsIndirect with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7298,7 +7491,7 @@ test "gpuComputePassEncoder debug groups with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7342,7 +7535,7 @@ test "gpuRenderPassEncoder.setBlendConstant with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7385,7 +7578,7 @@ test "gpuRenderPassEncoder.setStencilReference with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7428,7 +7621,7 @@ test "gpuRenderPassEncoder.pushDebugGroup and popDebugGroup with real hardware" 
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7473,7 +7666,7 @@ test "gpuRenderPassEncoder.insertDebugMarker with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7516,7 +7709,7 @@ test "gpuRenderPassEncoder.setBlendConstant parses all color channels correctly"
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7570,7 +7763,7 @@ test "gpuRenderPassEncoder.drawIndirect with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7628,7 +7821,7 @@ test "gpuRenderPassEncoder.drawIndexedIndirect with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7691,7 +7884,7 @@ test "gpuRenderPassEncoder.drawIndirect with non-zero offset" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7752,8 +7945,13 @@ test "gpuCreateRenderBundleEncoder validates args and returns null without gctx"
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -7783,8 +7981,13 @@ test "gpuRenderBundleEncoderFinish validates args and frees encoder" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -7819,8 +8022,13 @@ test "gpuCreateQuerySet validates args and returns null without gctx" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -7849,8 +8057,13 @@ test "gpuQuerySetDestroy validates args and returns undefined" {
     var ht = try HandleTable.init(testing.allocator, 32);
     defer ht.deinit(testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, null);
-    defer bridge.deinit();
+    const cr = try createTestGpuContext(testing.allocator);
+    const gctx = cr[0];
+    defer destroyTestGpuContext(gctx, cr[1], testing.allocator);
+
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
+    bridge.gctx = gctx;
+    // bridge.deinit skipped — destroyTestGpuContext handles cleanup
 
     var engine = try JsEngine.init(testing.allocator);
     defer engine.deinit();
@@ -7889,7 +8102,7 @@ test "gpuCommandEncoderClearBuffer with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7925,7 +8138,7 @@ test "gpuCommandEncoderCopyBufferToBuffer with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7962,7 +8175,7 @@ test "gpuCommandEncoderWriteBuffer with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);
@@ -7999,7 +8212,7 @@ test "gpuCommandEncoder debug groups with real hardware" {
     const glfw_window = context_result[1];
     defer destroyTestGpuContext(gctx, glfw_window, testing.allocator);
 
-    var bridge = try GpuBridge.init(&ht, gctx);
+    var bridge = try GpuBridge.init(&ht, testing.allocator, gctx.window_provider);
     defer bridge.deinit();
 
     var engine = try JsEngine.init(testing.allocator);

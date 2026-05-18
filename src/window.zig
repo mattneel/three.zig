@@ -13,21 +13,16 @@ pub const WindowConfig = struct {
 
 pub const Window = struct {
     glfw_window: *zglfw.Window,
-    gctx: *dawn.GraphicsContext,
+    window_provider: dawn.WindowProvider,
     allocator: std.mem.Allocator,
 
-    /// Create a GLFW window backed by a Dawn GraphicsContext (source-built).
-    /// The GraphicsContext owns the GPU instance, device, surface, and swapchain.
     pub fn init(allocator: std.mem.Allocator, config: WindowConfig) !Window {
-        // Force X11 only on Linux (Wayland+Vulkan doesn't present on WSLg).
-        // Other platforms should use GLFW defaults.
         if (builtin.os.tag == .linux) {
             try zglfw.initHint(.platform, zglfw.Platform.x11);
         }
         try zglfw.init();
         errdefer zglfw.terminate();
 
-        // Tell GLFW we do not want an OpenGL context — we are using WebGPU/Dawn.
         zglfw.WindowHint.set(.client_api, .no_api);
 
         const glfw_window = try zglfw.createWindow(
@@ -39,7 +34,6 @@ pub const Window = struct {
         );
         errdefer zglfw.destroyWindow(glfw_window);
 
-        // Build the WindowProvider that Dawn needs.
         const window_provider = dawn.WindowProvider{
             .window = @ptrCast(glfw_window),
             .fn_getTime = @ptrCast(&zglfw.getTime),
@@ -52,84 +46,47 @@ pub const Window = struct {
             .fn_getWin32Window = @ptrCast(&zglfw.getWin32Window),
         };
 
-        // Create the Dawn GraphicsContext — this creates instance, adapter,
-        // device, surface, and swapchain all in one call.
         log.info("GLFW window created {}x{}", .{ config.width, config.height });
 
-        const gctx = try dawn.GraphicsContext.create(allocator, window_provider, .{});
-
-        // Ensure the window is visible and focused (WSLg/Wayland may not show by default)
         glfw_window.show();
         glfw_window.focus();
 
         const fb = glfw_window.getFramebufferSize();
         const visible = zglfw.getWindowAttributeUntyped(glfw_window, .visible);
-        log.info("GPU context ready, framebuffer {}x{}, visible={}", .{ fb[0], fb[1], visible });
+        log.info("framebuffer {}x{}, visible={}", .{ fb[0], fb[1], visible });
 
         return .{
             .glfw_window = glfw_window,
-            .gctx = gctx,
+            .window_provider = window_provider,
             .allocator = allocator,
         };
     }
 
-    /// Tear down GPU resources, destroy the GLFW window, and terminate GLFW.
     pub fn deinit(self: *Window) void {
-        self.gctx.destroy(self.allocator);
         zglfw.destroyWindow(self.glfw_window);
         zglfw.terminate();
     }
 
-    /// Returns true when the user has requested the window to close.
     pub fn shouldClose(self: *const Window) bool {
         return self.glfw_window.shouldClose();
     }
 
-    /// Pump the GLFW event queue.
     pub fn pollEvents(_: *Window) void {
         zglfw.pollEvents();
     }
 
-    /// Return the window size in screen coordinates.
     pub fn getSize(self: *const Window) struct { width: u32, height: u32 } {
         const size = self.glfw_window.getSize();
-        return .{
-            .width = @intCast(size[0]),
-            .height = @intCast(size[1]),
-        };
+        return .{ .width = @intCast(size[0]), .height = @intCast(size[1]) };
     }
 
-    /// Return the framebuffer size in pixels (may differ from window size on HiDPI).
     pub fn getFramebufferSize(self: *const Window) struct { width: u32, height: u32 } {
         const size = self.glfw_window.getFramebufferSize();
-        return .{
-            .width = @intCast(size[0]),
-            .height = @intCast(size[1]),
-        };
+        return .{ .width = @intCast(size[0]), .height = @intCast(size[1]) };
     }
 
-    /// Return the content scale factor (≈ devicePixelRatio in browser terms).
-    /// Uses the X axis scale; on most systems X == Y.
     pub fn getContentScale(self: *const Window) f32 {
         const scale = self.glfw_window.getContentScale();
         return scale[0];
-    }
-
-    // --- Convenience accessors for the underlying GPU objects ---
-
-    pub fn getInstance(self: *const Window) dawn.wgpu.Instance {
-        return self.gctx.instance;
-    }
-
-    pub fn getDevice(self: *const Window) dawn.wgpu.Device {
-        return self.gctx.device;
-    }
-
-    pub fn getQueue(self: *const Window) dawn.wgpu.Queue {
-        return self.gctx.queue;
-    }
-
-    pub fn getSurface(self: *const Window) dawn.wgpu.Surface {
-        return self.gctx.surface;
     }
 };

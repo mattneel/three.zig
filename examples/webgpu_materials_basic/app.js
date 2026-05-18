@@ -8,6 +8,7 @@ var camera, scene, renderer;
 var spheres = [];
 var mouseX = 0, mouseY = 0;
 var windowHalfX, windowHalfY;
+var lastLog = 0;
 
 function init() {
   windowHalfX = window.innerWidth / 2;
@@ -70,6 +71,10 @@ async function start() {
 start();
 
 function animate() {
+  if (spheres.length > 0 && Date.now() - lastLog > 1000) {
+    console.log('frame, spheres:', spheres.length, 'renderer:', !!renderer);
+    lastLog = Date.now();
+  }
   var timer = 0.0001 * Date.now();
   camera.position.x += (mouseX - camera.position.x) * 0.05;
   camera.position.y += (-mouseY - camera.position.y) * 0.05;
