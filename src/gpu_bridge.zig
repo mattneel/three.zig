@@ -1424,7 +1424,7 @@ fn gpuCreateTextureViewNative(
             const fmt_val = desc_val.getPropertyStr(ctx, "format");
             defer fmt_val.deinit(ctx);
             if (!fmt_val.isUndefined() and !fmt_val.isNull()) {
-                if (fmt_val.toCString(ctx)) |s| {
+                if (safeToCString(fmt_val, ctx)) |s| {
                     defer ctx.freeCString(s);
                     raw_view_desc.format = parseTextureFormat(std.mem.span(s));
                 } else {
@@ -1436,7 +1436,7 @@ fn gpuCreateTextureViewNative(
             // dimension (string)
             const dim_val = desc_val.getPropertyStr(ctx, "dimension");
             defer dim_val.deinit(ctx);
-            if (dim_val.toCString(ctx)) |s| {
+            if (safeToCString(dim_val, ctx)) |s| {
                 defer ctx.freeCString(s);
                 const str = std.mem.span(s);
                 if (std.mem.eql(u8, str, "1d")) raw_view_desc.dimension = raw.c.WGPUTextureViewDimension_1D
@@ -1470,7 +1470,7 @@ fn gpuCreateTextureViewNative(
             // aspect
             const asp_val = desc_val.getPropertyStr(ctx, "aspect");
             defer asp_val.deinit(ctx);
-            if (asp_val.toCString(ctx)) |s| {
+            if (safeToCString(asp_val, ctx)) |s| {
                 defer ctx.freeCString(s);
                 const str = std.mem.span(s);
                 if (std.mem.eql(u8, str, "stencil-only")) raw_view_desc.aspect = raw.c.WGPUTextureAspect_StencilOnly
@@ -1510,7 +1510,7 @@ fn gpuCreateSamplerNative(
 
             const mag_val = js_desc.getPropertyStr(ctx, "magFilter");
             defer mag_val.deinit(ctx);
-            sampler_desc.magFilter = if (mag_val.toCString(ctx)) |s| blk: {
+            sampler_desc.magFilter = if (safeToCString(mag_val, ctx)) |s| blk: {
                 defer ctx.freeCString(s);
                 if (std.mem.eql(u8, std.mem.span(s), "linear")) break :blk raw.c.WGPUFilterMode_Linear;
                 break :blk raw.c.WGPUFilterMode_Nearest;
@@ -1518,7 +1518,7 @@ fn gpuCreateSamplerNative(
 
             const min_val = js_desc.getPropertyStr(ctx, "minFilter");
             defer min_val.deinit(ctx);
-            sampler_desc.minFilter = if (min_val.toCString(ctx)) |s| blk: {
+            sampler_desc.minFilter = if (safeToCString(min_val, ctx)) |s| blk: {
                 defer ctx.freeCString(s);
                 if (std.mem.eql(u8, std.mem.span(s), "linear")) break :blk raw.c.WGPUFilterMode_Linear;
                 break :blk raw.c.WGPUFilterMode_Nearest;
@@ -1526,7 +1526,7 @@ fn gpuCreateSamplerNative(
 
             const mip_val = js_desc.getPropertyStr(ctx, "mipmapFilter");
             defer mip_val.deinit(ctx);
-            sampler_desc.mipmapFilter = if (mip_val.toCString(ctx)) |s| blk: {
+            sampler_desc.mipmapFilter = if (safeToCString(mip_val, ctx)) |s| blk: {
                 defer ctx.freeCString(s);
                 if (std.mem.eql(u8, std.mem.span(s), "linear")) break :blk raw.c.WGPUMipmapFilterMode_Linear;
                 break :blk raw.c.WGPUMipmapFilterMode_Nearest;
@@ -1545,7 +1545,7 @@ fn gpuCreateSamplerNative(
                 };
                 const mode_val = js_desc.getPropertyStr(ctx, prop);
                 defer mode_val.deinit(ctx);
-                const mode = if (mode_val.toCString(ctx)) |s| blk: {
+                const mode = if (safeToCString(mode_val, ctx)) |s| blk: {
                     defer ctx.freeCString(s);
                     const str = std.mem.span(s);
                     if (std.mem.eql(u8, str, "repeat")) break :blk raw.c.WGPUAddressMode_Repeat;
@@ -1562,7 +1562,7 @@ fn gpuCreateSamplerNative(
             const compare_val = js_desc.getPropertyStr(ctx, "compare");
             defer compare_val.deinit(ctx);
             if (!compare_val.isUndefined() and !compare_val.isNull()) {
-                if (compare_val.toCString(ctx)) |s| {
+                if (safeToCString(compare_val, ctx)) |s| {
                     defer ctx.freeCString(s);
                     sampler_desc.compare = parseCompareFunction(std.mem.span(s));
                 } else {
@@ -1760,14 +1760,14 @@ fn gpuCreateShaderModuleNative(
     const code_val = desc_val.getPropertyStr(context, "code");
     defer code_val.deinit(context);
 
-    const code_ptr = code_val.toCString(context) orelse return Value.@"null";
+    const code_ptr = safeToCString(code_val, context) orelse return Value.@"null";
     defer context.freeCString(code_ptr);
 
     const code_span = std.mem.span(code_ptr);
 
     const label_val = desc_val.getPropertyStr(context, "label");
     defer label_val.deinit(context);
-    const label_ptr = label_val.toCString(context);
+    const label_ptr = safeToCString(label_val, context);
     defer if (label_ptr) |ptr| context.freeCString(ptr);
 
     var wgsl_desc = std.mem.zeroes(raw.c.WGPUShaderSourceWGSL);
@@ -1838,7 +1838,7 @@ fn gpuCreateBindGroupLayoutNative(
                 var buf_type: @TypeOf(entry.buffer.type) = raw.c.WGPUBufferBindingType_Uniform;
                 const type_val = buf_val.getPropertyStr(context, "type");
                 defer type_val.deinit(context);
-                if (type_val.toCString(context)) |s| {
+                if (safeToCString(type_val, context)) |s| {
                     defer context.freeCString(s);
                     const str = std.mem.span(s);
                     if (std.mem.eql(u8, str, "storage")) buf_type = @intCast(raw.c.WGPUBufferBindingType_Storage)
@@ -1857,7 +1857,7 @@ fn gpuCreateBindGroupLayoutNative(
                 var samp_type: @TypeOf(entry.sampler.type) = raw.c.WGPUSamplerBindingType_Filtering;
                 const type_val = samp_val.getPropertyStr(context, "type");
                 defer type_val.deinit(context);
-                if (type_val.toCString(context)) |s| {
+                if (safeToCString(type_val, context)) |s| {
                     defer context.freeCString(s);
                     const str = std.mem.span(s);
                     if (std.mem.eql(u8, str, "non-filtering")) samp_type = @intCast(raw.c.WGPUSamplerBindingType_NonFiltering)
@@ -1876,7 +1876,7 @@ fn gpuCreateBindGroupLayoutNative(
                 var sample_type: @TypeOf(entry.texture.sampleType) = raw.c.WGPUTextureSampleType_Float;
                 const st_val = tex_val.getPropertyStr(context, "sampleType");
                 defer st_val.deinit(context);
-                if (st_val.toCString(context)) |s| {
+                if (safeToCString(st_val, context)) |s| {
                     defer context.freeCString(s);
                     const str = std.mem.span(s);
                     if (std.mem.eql(u8, str, "unfilterable-float")) sample_type = @intCast(raw.c.WGPUTextureSampleType_UnfilterableFloat)
@@ -1897,7 +1897,7 @@ fn gpuCreateBindGroupLayoutNative(
                 const fmt_val = st_val2.getPropertyStr(context, "format");
                 defer fmt_val.deinit(context);
                 const st_fmt = blk: {
-                    if (fmt_val.toCString(context)) |s| {
+                    if (safeToCString(fmt_val, context)) |s| {
                         defer context.freeCString(s);
                         break :blk parseTextureFormat(std.mem.span(s));
                     }
@@ -2024,7 +2024,7 @@ fn gpuCreateRenderPipelineNative(
     // vertex.entryPoint — null means auto-detect (Dawn default)
     const vep_val = vert_val.getPropertyStr(context, "entryPoint");
     defer vep_val.deinit(context);
-    const vertex_ep_owned = if (vep_val.isUndefined() or vep_val.isNull()) null else vep_val.toCString(context);
+    const vertex_ep_owned = if (vep_val.isUndefined() or vep_val.isNull()) null else safeToCString(vep_val, context);
     defer if (vertex_ep_owned) |s| context.freeCString(s);
     const vertex_ep: ?[*:0]const u8 = vertex_ep_owned;
 
@@ -2062,7 +2062,7 @@ fn gpuCreateRenderPipelineNative(
             var step_mode = raw.c.WGPUVertexStepMode_Vertex;
             const sm_val = vb.getPropertyStr(context, "stepMode");
             defer sm_val.deinit(context);
-            if (sm_val.toCString(context)) |s| {
+            if (safeToCString(sm_val, context)) |s| {
                 defer context.freeCString(s);
                 if (std.mem.eql(u8, std.mem.span(s), "instance")) step_mode = raw.c.WGPUVertexStepMode_Instance;
             }
@@ -2085,7 +2085,7 @@ fn gpuCreateRenderPipelineNative(
                     const fmt_val = attr.getPropertyStr(context, "format");
                     defer fmt_val.deinit(context);
                     const vert_fmt: raw.c.WGPUVertexFormat = blk: {
-                        if (fmt_val.toCString(context)) |s| {
+                        if (safeToCString(fmt_val, context)) |s| {
                             defer context.freeCString(s);
                             break :blk parseVertexFormat(std.mem.span(s));
                         }
@@ -2142,7 +2142,7 @@ fn gpuCreateRenderPipelineNative(
 
         const fep_val = frag_val.getPropertyStr(context, "entryPoint");
         defer fep_val.deinit(context);
-        const frag_ep_owned = if (fep_val.isUndefined() or fep_val.isNull()) null else fep_val.toCString(context);
+        const frag_ep_owned = if (fep_val.isUndefined() or fep_val.isNull()) null else safeToCString(fep_val, context);
         defer if (frag_ep_owned) |s| context.freeCString(s);
         const frag_ep: ?[*:0]const u8 = frag_ep_owned;
 
@@ -2162,7 +2162,7 @@ fn gpuCreateRenderPipelineNative(
                 const fmt_val2 = tgt.getPropertyStr(context, "format");
                 defer fmt_val2.deinit(context);
                 const target_fmt: raw.c.WGPUTextureFormat = blk: {
-                    if (fmt_val2.toCString(context)) |s| {
+                    if (safeToCString(fmt_val2, context)) |s| {
                         defer context.freeCString(s);
                         break :blk parseTextureFormat(std.mem.span(s));
                     }
@@ -2214,7 +2214,7 @@ fn gpuCreateRenderPipelineNative(
     if (!prim_val.isUndefined() and !prim_val.isNull()) {
         const topo_val = prim_val.getPropertyStr(context, "topology");
         defer topo_val.deinit(context);
-        if (topo_val.toCString(context)) |s| {
+        if (safeToCString(topo_val, context)) |s| {
             defer context.freeCString(s);
             const str = std.mem.span(s);
             if (std.mem.eql(u8, str, "point-list")) raw_primitive.topology = raw.c.WGPUPrimitiveTopology_PointList
@@ -2226,7 +2226,7 @@ fn gpuCreateRenderPipelineNative(
 
         const cull_val = prim_val.getPropertyStr(context, "cullMode");
         defer cull_val.deinit(context);
-        if (cull_val.toCString(context)) |s| {
+        if (safeToCString(cull_val, context)) |s| {
             defer context.freeCString(s);
             const str = std.mem.span(s);
             if (std.mem.eql(u8, str, "front")) raw_primitive.cullMode = raw.c.WGPUCullMode_Front
@@ -2235,7 +2235,7 @@ fn gpuCreateRenderPipelineNative(
 
         const ff_val = prim_val.getPropertyStr(context, "frontFace");
         defer ff_val.deinit(context);
-        if (ff_val.toCString(context)) |s| {
+        if (safeToCString(ff_val, context)) |s| {
             defer context.freeCString(s);
             const span = std.mem.span(s);
             if (std.mem.eql(u8, span, "cw")) raw_primitive.frontFace = raw.c.WGPUFrontFace_CW
@@ -2246,7 +2246,7 @@ fn gpuCreateRenderPipelineNative(
         if (raw_primitive.topology == raw.c.WGPUPrimitiveTopology_LineStrip or raw_primitive.topology == raw.c.WGPUPrimitiveTopology_TriangleStrip) {
             const sif_val = prim_val.getPropertyStr(context, "stripIndexFormat");
             defer sif_val.deinit(context);
-            if (sif_val.toCString(context)) |s| {
+            if (safeToCString(sif_val, context)) |s| {
                 defer context.freeCString(s);
                 if (std.mem.eql(u8, std.mem.span(s), "uint16")) raw_primitive.stripIndexFormat = raw.c.WGPUIndexFormat_Uint16
                 else raw_primitive.stripIndexFormat = raw.c.WGPUIndexFormat_Uint32;
@@ -2273,7 +2273,7 @@ fn gpuCreateRenderPipelineNative(
         const fmt_val3 = ds_val.getPropertyStr(context, "format");
         defer fmt_val3.deinit(context);
         raw_depth_stencil.format = blk: {
-            if (fmt_val3.toCString(context)) |s| {
+            if (safeToCString(fmt_val3, context)) |s| {
                 defer context.freeCString(s);
                 break :blk parseTextureFormat(std.mem.span(s));
             }
@@ -2292,7 +2292,7 @@ fn gpuCreateRenderPipelineNative(
 
         const dc_val = ds_val.getPropertyStr(context, "depthCompare");
         defer dc_val.deinit(context);
-        if (dc_val.toCString(context)) |s| {
+        if (safeToCString(dc_val, context)) |s| {
             defer context.freeCString(s);
             raw_depth_stencil.depthCompare = parseCompareFunction(std.mem.span(s));
         }
@@ -2386,7 +2386,7 @@ fn gpuCreateComputePipelineNative(
     // compute.entryPoint — null means use "main"
     const cep_val = compute_val.getPropertyStr(context, "entryPoint");
     defer cep_val.deinit(context);
-    const compute_ep_owned = if (cep_val.isUndefined() or cep_val.isNull()) null else cep_val.toCString(context);
+    const compute_ep_owned = if (cep_val.isUndefined() or cep_val.isNull()) null else safeToCString(cep_val, context);
     defer if (compute_ep_owned) |s| context.freeCString(s);
     const entry_point_ptr: [*:0]const u8 = if (compute_ep_owned) |ep| ep else "main";
 
@@ -2619,7 +2619,7 @@ fn gpuCommandEncoderBeginRenderPassNative(
             const load_val = elem.getPropertyStr(context, "loadOp");
             defer load_val.deinit(context);
             var load_op = raw.c.WGPULoadOp_Load;
-            if (load_val.toCString(context)) |s| {
+            if (safeToCString(load_val, context)) |s| {
                 defer context.freeCString(s);
                 const load_str = std.mem.span(s);
                 if (std.mem.eql(u8, load_str, "clear")) load_op = raw.c.WGPULoadOp_Clear;
@@ -2628,7 +2628,7 @@ fn gpuCommandEncoderBeginRenderPassNative(
             const store_val = elem.getPropertyStr(context, "storeOp");
             defer store_val.deinit(context);
             var store_op = raw.c.WGPUStoreOp_Store;
-            if (store_val.toCString(context)) |s| {
+            if (safeToCString(store_val, context)) |s| {
                 defer context.freeCString(s);
                 const store_str = std.mem.span(s);
                 if (std.mem.eql(u8, store_str, "discard")) store_op = raw.c.WGPUStoreOp_Discard;
@@ -2700,7 +2700,7 @@ fn gpuCommandEncoderBeginRenderPassNative(
         var d_load = raw.c.WGPULoadOp_Clear;
         const dl_val = ds_val.getPropertyStr(context, "depthLoadOp");
         defer dl_val.deinit(context);
-        if (dl_val.toCString(context)) |s| {
+        if (safeToCString(dl_val, context)) |s| {
             defer context.freeCString(s);
             if (std.mem.eql(u8, std.mem.span(s), "load")) d_load = raw.c.WGPULoadOp_Load;
         }
@@ -2708,7 +2708,7 @@ fn gpuCommandEncoderBeginRenderPassNative(
         var d_store = raw.c.WGPUStoreOp_Store;
         const ds_store_val = ds_val.getPropertyStr(context, "depthStoreOp");
         defer ds_store_val.deinit(context);
-        if (ds_store_val.toCString(context)) |s| {
+        if (safeToCString(ds_store_val, context)) |s| {
             defer context.freeCString(s);
             if (std.mem.eql(u8, std.mem.span(s), "discard")) d_store = raw.c.WGPUStoreOp_Discard;
         }
@@ -2858,7 +2858,7 @@ fn gpuRenderPassSetIndexBufferNative(
     // Parse format string
     var index_format: wgpu.IndexFormat = .uint32;
     const fmt_val: Value = @bitCast(argv[2]);
-    if (fmt_val.toCString(context)) |s| {
+    if (safeToCString(fmt_val, context)) |s| {
         defer context.freeCString(s);
         if (std.mem.eql(u8, std.mem.span(s), "uint16")) index_format = .uint16;
     }
@@ -3603,7 +3603,7 @@ fn gpuCreateRenderBundleEncoderNative(
         for (0..cf_count) |i| {
             const elem = cf_val.getPropertyUint32(context, @intCast(i));
             defer elem.deinit(context);
-            if (elem.toCString(context)) |s| {
+            if (safeToCString(elem, context)) |s| {
                 defer context.freeCString(s);
                 color_formats[i] = @enumFromInt(parseTextureFormat(std.mem.span(s)));
             } else {
@@ -3768,7 +3768,7 @@ fn gpuCreateQuerySetNative(
     var query_type: wgpu.QueryType = .occlusion;
     const type_val = desc_val.getPropertyStr(context, "type");
     defer type_val.deinit(context);
-    if (type_val.toCString(context)) |s| {
+    if (safeToCString(type_val, context)) |s| {
         defer context.freeCString(s);
         const str = std.mem.span(s);
         if (std.mem.eql(u8, str, "timestamp")) query_type = .timestamp
@@ -4425,7 +4425,7 @@ fn gpuDevicePushErrorScopeNative(
     if (argv.len < 2) return Value.undefined;
 
     const filter_val: Value = @bitCast(argv[1]);
-    const filter_str = filter_val.toCString(context) orelse return Value.undefined;
+    const filter_str = safeToCString(filter_val, context) orelse return Value.undefined;
     defer context.freeCString(filter_str);
 
     const filter: wgpu.ErrorFilter = if (std.mem.eql(u8, std.mem.span(filter_str), "out-of-memory"))
@@ -4676,7 +4676,7 @@ fn gpuCreateComputePipelineAsyncNative(
 
     const cep_val = compute_val.getPropertyStr(context, "entryPoint");
     defer cep_val.deinit(context);
-    const compute_ep_owned = if (cep_val.isUndefined() or cep_val.isNull()) null else cep_val.toCString(context);
+    const compute_ep_owned = if (cep_val.isUndefined() or cep_val.isNull()) null else safeToCString(cep_val, context);
     defer if (compute_ep_owned) |s| context.freeCString(s);
     const entry_point_ptr: [*:0]const u8 = if (compute_ep_owned) |ep| ep else "main";
 
@@ -4805,7 +4805,7 @@ fn gpuCreateRenderPipelineAsyncNative(
     const vertex_module: wgpu.ShaderModule = vm_entry.handle.as(wgpu.ShaderModule) orelse return Value.@"null";
     const vep_val = vert_val.getPropertyStr(context, "entryPoint");
     defer vep_val.deinit(context);
-    const vertex_ep_owned = if (vep_val.isUndefined() or vep_val.isNull()) null else vep_val.toCString(context);
+    const vertex_ep_owned = if (vep_val.isUndefined() or vep_val.isNull()) null else safeToCString(vep_val, context);
     defer if (vertex_ep_owned) |s| context.freeCString(s);
     const vertex_ep: ?[*:0]const u8 = vertex_ep_owned;
 
@@ -4822,7 +4822,7 @@ fn gpuCreateRenderPipelineAsyncNative(
         frag_module = fm_entry.handle.as(wgpu.ShaderModule) orelse return Value.@"null";
         const fep_val = frag_val.getPropertyStr(context, "entryPoint");
         defer fep_val.deinit(context);
-        const fep_owned = if (fep_val.isUndefined() or fep_val.isNull()) null else fep_val.toCString(context);
+        const fep_owned = if (fep_val.isUndefined() or fep_val.isNull()) null else safeToCString(fep_val, context);
         defer if (fep_owned) |s| context.freeCString(s);
         frag_ep = fep_owned;
     }
@@ -5175,7 +5175,7 @@ fn gpuQueueWriteTextureNative(
     var aspect: @TypeOf(std.mem.zeroes(raw.c.WGPUTexelCopyTextureInfo).aspect) = @intCast(raw.c.WGPUTextureAspect_All);
     const aspect_val = dest_val.getPropertyStr(context, "aspect");
     defer aspect_val.deinit(context);
-    if (aspect_val.toCString(context)) |s| {
+    if (safeToCString(aspect_val, context)) |s| {
         defer context.freeCString(s);
         const aspect_str = std.mem.span(s);
         if (std.mem.eql(u8, aspect_str, "depth-only")) aspect = @intCast(raw.c.WGPUTextureAspect_DepthOnly)
@@ -5322,14 +5322,14 @@ fn gpuConfigureContextNative(
     var alpha_mode_str: []const u8 = "opaque";
     if (argv.len >= 2) {
         const format_val: Value = @bitCast(argv[1]);
-        if (format_val.toCString(context)) |s| {
+        if (safeToCString(format_val, context)) |s| {
             defer context.freeCString(s);
             format_str = std.mem.span(s);
         }
     }
     if (argv.len >= 3) {
         const alpha_val: Value = @bitCast(argv[2]);
-        if (alpha_val.toCString(context)) |s| {
+        if (safeToCString(alpha_val, context)) |s| {
             defer context.freeCString(s);
             alpha_mode_str = std.mem.span(s);
         }
@@ -5469,7 +5469,7 @@ fn parseBlendComponent(ctx: *Context, blend_val: Value, prop: [*:0]const u8) raw
 
     const op_val = comp_val.getPropertyStr(ctx, "operation");
     defer op_val.deinit(ctx);
-    if (op_val.toCString(ctx)) |s| {
+    if (safeToCString(op_val, ctx)) |s| {
         defer ctx.freeCString(s);
         const str = std.mem.span(s);
         if (std.mem.eql(u8, str, "add")) result.operation = raw.c.WGPUBlendOperation_Add
@@ -5481,14 +5481,14 @@ fn parseBlendComponent(ctx: *Context, blend_val: Value, prop: [*:0]const u8) raw
 
     const src_val = comp_val.getPropertyStr(ctx, "srcFactor");
     defer src_val.deinit(ctx);
-    if (src_val.toCString(ctx)) |s| {
+    if (safeToCString(src_val, ctx)) |s| {
         defer ctx.freeCString(s);
         result.srcFactor = parseBlendFactor(std.mem.span(s));
     }
 
     const dst_val = comp_val.getPropertyStr(ctx, "dstFactor");
     defer dst_val.deinit(ctx);
-    if (dst_val.toCString(ctx)) |s| {
+    if (safeToCString(dst_val, ctx)) |s| {
         defer ctx.freeCString(s);
         result.dstFactor = parseBlendFactor(std.mem.span(s));
     }
