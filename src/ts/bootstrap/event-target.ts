@@ -95,7 +95,7 @@ export class EventTarget {
       }
 
       if (typeof entry.callback === "function") {
-        entry.callback(event);
+        entry.callback.call(this, event);
       } else {
         entry.callback.handleEvent(event);
       }

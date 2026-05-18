@@ -57040,7 +57040,7 @@ var<${access}> ${name} : ${structName};`;
     });
     camera = new PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
     camera.position.z = 3;
-    var path = "examples/webgpu_materials_basic/textures/cube/pisa/";
+    var path = "examples/webgpu_materials_basic/assets/textures/cube/pisa/";
     var format = ".png";
     var urls = [
       path + "px" + format,
@@ -57079,12 +57079,11 @@ var<${access}> ${name} : ${structName};`;
   async function start() {
     init();
     await renderer.init();
-    animate();
+    renderer.setAnimationLoop(animate);
     console.log("Basic Material example started");
   }
   start();
   function animate() {
-    requestAnimationFrame(animate);
     var timer = 1e-4 * Date.now();
     camera.position.x += (mouseX - camera.position.x) * 0.05;
     camera.position.y += (-mouseY - camera.position.y) * 0.05;
